@@ -347,7 +347,9 @@ const std::vector<AnnNNDescentInputs> inputs =
 
 const std::vector<AnnNNDescentBatchInputs> inputsBatch =
   raft::util::itertools::product<AnnNNDescentBatchInputs>(
-    {std::make_pair(0.9, 4lu)},  // min_recall, n_clusters
+    {std::make_pair(0.9, 4lu),
+     std::make_pair(0.9, 5lu),
+     std::make_pair(0.9, 6lu)},  // min_recall, n_clusters
     {100000},                    // n_rows
     {512},                       // dim
     {64},                        // graph_degree

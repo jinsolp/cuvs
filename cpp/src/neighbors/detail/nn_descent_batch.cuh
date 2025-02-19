@@ -500,8 +500,9 @@ void cluster_nnd(raft::resources const& res,
       "# Data on host. Running clusters: %lu / %lu", cluster_id + 1, params.n_clusters);
     size_t num_data_in_cluster = cluster_size[cluster_id];
     size_t offset              = offsets[cluster_id];
-    // std::cout << "[THREAD " << omp_get_thread_num() << "]" << "num data in cluster: " <<
-    // num_data_in_cluster << ", offset is:" << offset << std::endl;
+    std::cout << "[THREAD " << omp_get_thread_num() << "]"
+              << "num data in cluster: " << num_data_in_cluster << ", offset is:" << offset
+              << std::endl;
 #pragma omp parallel for
     for (size_t i = 0; i < num_data_in_cluster; i++) {
       size_t global_row = (inverted_indices + offset)[i];
@@ -633,9 +634,9 @@ void batch_build(raft::resources const& res,
                        inverted_indices.view(),
                        cluster_size.view(),
                        offset.view());
-  // raft::print_host_vector("cluster sizes", cluster_size.data_handle(), params.n_clusters,
-  // std::cout); raft::print_host_vector("offsets", offset.data_handle(), params.n_clusters,
-  // std::cout);
+  raft::print_host_vector(
+    "cluster sizes", cluster_size.data_handle(), params.n_clusters, std::cout);
+  raft::print_host_vector("offsets", offset.data_handle(), params.n_clusters, std::cout);
 
   if (intermediate_degree >= min_cluster_size) {
     RAFT_LOG_WARN(
@@ -679,11 +680,10 @@ void batch_build(raft::resources const& res,
             std::numeric_limits<float>::max());
 
   const raft::comms::nccl_clique& clique = raft::resource::get_nccl_clique(res);
-  // std::cout << "[DEVICE] num ranks in the clique is: " << clique.num_ranks_ << " res has
-  // resources " << res.has_resource_factory(raft::resource::resource_type::NCCL_CLIQUE) <<
-  // std::endl;
-  size_t clusters_per_rank = params.n_clusters / clique.num_ranks_;
-  // std::cout << "clusters per rank is: " << clusters_per_rank << std::endl;
+  size_t clusters_per_rank               = params.n_clusters / clique.num_ranks_;
+  size_t rem = params.n_clusters - clusters_per_rank * clique.num_ranks_;
+  std::cout << "clusters per rank is: " << clusters_per_rank << "num ranks is" << clique.num_ranks_
+            << std::endl;
 
 #pragma omp parallel for
   for (int rank = 0; rank < clique.num_ranks_; rank++) {
@@ -692,12 +692,17 @@ void batch_build(raft::resources const& res,
     RAFT_CUDA_TRY(cudaSetDevice(dev_id));
 
     size_t num_data_for_this_rank = 0;
-    size_t base_cluster_idx       = rank * clusters_per_rank;
-    for (size_t p = 0; p < clusters_per_rank; p++) {
+    size_t base_cluster_idx       = rank * clusters_per_rank + std::min((size_t)rank, rem);
+    size_t num_clusters_for_this_rank =
+      (size_t)rank < rem
+        ? clusters_per_rank + 1
+        : clusters_per_rank;  // std::min(clusters_per_rank, params.n_clusters - base_cluster_idx);
+    for (size_t p = 0; p < num_clusters_for_this_rank; p++) {
       num_data_for_this_rank += cluster_size(base_cluster_idx + p);
     }
-    // std::cout << "rank " << rank << " base cluster idx for this rank is " << base_cluster_idx <<
-    // " number of data for this rank is: " << num_data_for_this_rank << std::endl;
+    std::cout << "rank " << rank << " base cluster idx for this rank is " << base_cluster_idx
+              << " num clusters for this rank " << num_clusters_for_this_rank
+              << " number of data for this rank is: " << num_data_for_this_rank << std::endl;
     auto int_graph = raft::make_host_matrix<int, int64_t, row_major>(
       max_cluster_size, static_cast<int64_t>(extended_graph_degree));
 
@@ -717,8 +722,8 @@ void batch_build(raft::resources const& res,
 
     // re-map offsets for each rank
     size_t rank_offset = offset(base_cluster_idx);
-    for (size_t p = base_cluster_idx; p < (rank + 1) * clusters_per_rank; p++) {
-      offset(p) -= rank_offset;
+    for (size_t p = 0; p < num_clusters_for_this_rank; p++) {
+      offset(base_cluster_idx + p) -= rank_offset;
     }
 
     // raft::print_host_vector("remapped offsets for each rank", offset.data_handle() +
@@ -741,7 +746,7 @@ void batch_build(raft::resources const& res,
                          batch_indices_d.data_handle(),
                          batch_distances_d.data_handle(),
                          build_config,
-                         clusters_per_rank);
+                         num_clusters_for_this_rank);
   }
   // std::cout << "done cluster nnd snmg" << std::endl;
   raft::copy(global_idx.graph().data_handle(),
