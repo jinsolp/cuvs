@@ -22,6 +22,7 @@
 #include <cuvs/neighbors/nn_descent.hpp>
 
 #include <raft/core/resource/cuda_stream.hpp>
+#include <raft/core/resource/nccl_clique.hpp>
 #include <raft/util/cudart_utils.hpp>
 #include <raft/util/itertools.hpp>
 #include <rmm/device_uvector.hpp>
@@ -204,6 +205,7 @@ class AnnNNDescentBatchTest : public ::testing::TestWithParam<AnnNNDescentBatchI
  public:
   AnnNNDescentBatchTest()
     : stream_(raft::resource::get_cuda_stream(handle_)),
+      clique_(raft::resource::get_nccl_clique(handle_)),
       ps(::testing::TestWithParam<AnnNNDescentBatchInputs>::GetParam()),
       database(0, stream_)
   {
@@ -234,7 +236,7 @@ class AnnNNDescentBatchTest : public ::testing::TestWithParam<AnnNNDescentBatchI
       raft::update_host(distances_naive.data(), distances_naive_dev.data(), queries_size, stream_);
       raft::resource::sync_stream(handle_);
     }
-
+    std::cout << "naive knn done\n";
     {
       {
         nn_descent::index_params index_params;
@@ -254,7 +256,13 @@ class AnnNNDescentBatchTest : public ::testing::TestWithParam<AnnNNDescentBatchI
             raft::copy(database_host.data_handle(), database.data(), database.size(), stream_);
             auto database_host_view = raft::make_host_matrix_view<const DataT, int64_t>(
               (const DataT*)database_host.data_handle(), ps.n_rows, ps.dim);
+
+            auto start = raft::curTimeMillis();
             auto index = nn_descent::build(handle_, index_params, database_host_view);
+            auto end   = raft::curTimeMillis();
+
+            printf("Time taken for MG batch NND: %u ms\n", end - start);
+
             raft::copy(
               indices_NNDescent.data(), index.graph().data_handle(), queries_size, stream_);
             if (index.distances().has_value()) {
@@ -311,8 +319,9 @@ class AnnNNDescentBatchTest : public ::testing::TestWithParam<AnnNNDescentBatchI
   }
 
  private:
-  raft::resources handle_;
+  raft::device_resources handle_;
   rmm::cuda_stream_view stream_;
+  raft::comms::nccl_clique clique_;
   AnnNNDescentBatchInputs ps;
   rmm::device_uvector<DataT> database;
 };
@@ -327,13 +336,21 @@ const std::vector<AnnNNDescentInputs> inputs =
                                                      {false, true},
                                                      {0.90});
 
+// const std::vector<AnnNNDescentBatchInputs> inputsBatch =
+//   raft::util::itertools::product<AnnNNDescentBatchInputs>(
+//     {std::make_pair(0.9, 3lu), std::make_pair(0.9, 2lu)},  // min_recall, n_clusters
+//     {4000, 5000},                                          // n_rows
+//     {192, 512},                                            // dim
+//     {32, 64},                                              // graph_degree
+//     {cuvs::distance::DistanceType::L2Expanded},
+//     {false});
+
 const std::vector<AnnNNDescentBatchInputs> inputsBatch =
   raft::util::itertools::product<AnnNNDescentBatchInputs>(
-    {std::make_pair(0.9, 3lu), std::make_pair(0.9, 2lu)},  // min_recall, n_clusters
-    {4000, 5000},                                          // n_rows
-    {192, 512},                                            // dim
-    {32, 64},                                              // graph_degree
+    {std::make_pair(0.9, 4lu)},  // min_recall, n_clusters
+    {100000},                    // n_rows
+    {512},                       // dim
+    {64},                        // graph_degree
     {cuvs::distance::DistanceType::L2Expanded},
-    {false, true});
-
+    {true});
 }  // namespace cuvs::neighbors::nn_descent

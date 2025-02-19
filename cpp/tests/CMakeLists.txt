@@ -169,6 +169,7 @@ if(BUILD_TESTS)
     1
     PERCENT
     100
+    ADDITIONAL_DEP nccl
   )
 
   ConfigureTest(
