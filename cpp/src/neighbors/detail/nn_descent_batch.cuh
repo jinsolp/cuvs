@@ -838,6 +838,7 @@ void batch_build_mg(raft::resources const& res,
   // clique.num_ranks_
   //           << std::endl;
 
+  omp_set_nested(1);
 #pragma omp parallel for
   for (int rank = 0; rank < clique.num_ranks_; rank++) {
     int dev_id                            = clique.device_ids_[rank];
@@ -881,7 +882,7 @@ void batch_build_mg(raft::resources const& res,
 
     // raft::print_host_vector("remapped offsets for each rank", offset.data_handle() +
     // base_cluster_idx, clusters_per_rank, std::cout);
-
+    // #pragma omp parallel
     cluster_nnd<T, IdxT>(dev_res,
                          params,
                          graph_degree,

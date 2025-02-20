@@ -1049,16 +1049,21 @@ void GnndGraph<Index_t>::init_random_graph()
   for (size_t seg_idx = 0; seg_idx < static_cast<size_t>(num_segments); seg_idx++) {
     // random sequence (range: 0~nrow)
     // segment_x stores neighbors which id % num_segments == x
+    // auto start = raft::curTimeMillis();
     std::vector<Index_t> rand_seq(nrow / num_segments);
     std::iota(rand_seq.begin(), rand_seq.end(), 0);
     auto gen = std::default_random_engine{seg_idx};
     std::shuffle(rand_seq.begin(), rand_seq.end(), gen);
+    // auto end = raft::curTimeMillis();
+    // printf("\t[THREAD %lu]seg idx %lu: time to get a random seq: %u\n",
+    // (size_t)omp_get_thread_num(), seg_idx, end - start);
 
 #pragma omp parallel for
     for (size_t i = 0; i < nrow; i++) {
       size_t base_idx      = i * node_degree + seg_idx * segment_size;
       auto h_neighbor_list = h_graph + base_idx;
       auto h_dist_list     = h_dists.data_handle() + base_idx;
+      // start = raft::curTimeMillis();
       for (size_t j = 0; j < static_cast<size_t>(segment_size); j++) {
         size_t idx = base_idx + j;
         Index_t id = rand_seq[idx % rand_seq.size()] * num_segments + seg_idx;
@@ -1068,6 +1073,9 @@ void GnndGraph<Index_t>::init_random_graph()
         h_neighbor_list[j].id_with_flag() = id;
         h_dist_list[j]                    = std::numeric_limits<DistData_t>::max();
       }
+      // end = raft::curTimeMillis();
+      // printf("\t[THREAD %lu]time for inner loop: %u\n", (size_t)omp_get_thread_num(), end -
+      // start);
     }
   }
 }
@@ -1377,27 +1385,26 @@ void GNND<Data_t, Index_t>::build(Data_t* data,
                dists_buffer_.data_handle(),
                nrow_ * DEGREE_ON_DEVICE,
                raft::resource::get_cuda_stream(res));
-    end   = raft::curTimeMillis();
     start = raft::curTimeMillis();
     graph_.sample_graph_new(graph_host_buffer_.data_handle(), DEGREE_ON_DEVICE);
     end = raft::curTimeMillis();
-    printf("Time for sample new graph here: %u\n", end - start);
+    // printf("Time for sample new graph here: %u\n", end - start);
   }
 
-  start = raft::curTimeMillis();
+  // start = raft::curTimeMillis();
   graph_.update_graph(graph_host_buffer_.data_handle(),
                       dists_host_buffer_.data_handle(),
                       DEGREE_ON_DEVICE,
                       update_counter_);
   raft::resource::sync_stream(res);
-  end = raft::curTimeMillis();
-  printf("Time for update graph: %u\n", end - start);
+  // end = raft::curTimeMillis();
+  // printf("Time for update graph: %u\n", end - start);
   graph_.sort_lists();
 
   // Reuse graph_.h_dists as the buffer for shrink the lists in graph
   static_assert(sizeof(decltype(*(graph_.h_dists.data_handle()))) >= sizeof(Index_t));
 
-  start = raft::curTimeMillis();
+  // start = raft::curTimeMillis();
   if (return_distances) {
     auto graph_d_dists = raft::make_device_matrix<DistData_t, int64_t, raft::row_major>(
       res, nrow_, build_config_.node_degree);
@@ -1417,8 +1424,8 @@ void GNND<Data_t, Index_t>::build(Data_t* data,
       res, raft::make_const_mdspan(graph_d_dists.view()), output_dist_view, coords);
     raft::resource::sync_stream(res);
   }
-  end = raft::curTimeMillis();
-  printf("Time for copying return dists: %u\n", end - start);
+  // end = raft::curTimeMillis();
+  // printf("Time for copying return dists: %u\n", end - start);
 
   Index_t* graph_shrink_buffer = (Index_t*)graph_.h_dists.data_handle();
 
