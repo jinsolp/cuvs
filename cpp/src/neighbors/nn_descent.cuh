@@ -115,7 +115,15 @@ void build(raft::resources const& res,
 {
   if (params.n_clusters > 1) {
     if constexpr (std::is_same_v<T, float>) {
-      detail::experimental::batch_build<T, IdxT>(res, params, dataset, idx);
+      const raft::comms::nccl_clique& clique = raft::resource::get_nccl_clique(res);
+      if (clique.num_ranks_ > 1) {
+        // run mg batch nnd here
+        printf("Running build. Should run MG batch nnd\n");
+        detail::experimental::batch_build_mg<T, IdxT>(res, params, dataset, idx);
+      } else {
+        printf("Running build. SG batch nnd\n");
+        detail::experimental::batch_build<T, IdxT>(res, params, dataset, idx);
+      }
     } else {
       RAFT_FAIL("Batched nn-descent is only supported for float precision");
     }
@@ -205,7 +213,15 @@ void build(raft::resources const& res,
 {
   if (params.n_clusters > 1) {
     if constexpr (std::is_same_v<T, float>) {
-      detail::experimental::batch_build<T, IdxT>(res, params, dataset, idx);
+      const raft::comms::nccl_clique& clique = raft::resource::get_nccl_clique(res);
+      if (clique.num_ranks_ > 1) {
+        // run mg batch nnd here
+        printf("Running build. Should run MG batch nnd\n");
+        detail::experimental::batch_build_mg<T, IdxT>(res, params, dataset, idx);
+      } else {
+        printf("Running build. SG batch nnd\n");
+        detail::experimental::batch_build<T, IdxT>(res, params, dataset, idx);
+      }
     } else {
       RAFT_FAIL("Batched nn-descent is only supported for float precision");
     }

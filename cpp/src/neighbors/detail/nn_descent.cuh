@@ -1292,8 +1292,14 @@ void GNND<Data_t, Index_t>::build(Data_t* data,
   }
 
   graph_.clear();
+  auto start = raft::curTimeMillis();
   graph_.init_random_graph();
+  auto end = raft::curTimeMillis();
+  printf("Time for init random graph: %u\n", end - start);
+  start = raft::curTimeMillis();
   graph_.sample_graph(true);
+  end = raft::curTimeMillis();
+  printf("Time for just sample graph: %u\n", end - start);
 
   auto update_and_sample = [&](bool update_graph) {
     if (update_graph) {
@@ -1343,7 +1349,6 @@ void GNND<Data_t, Index_t>::build(Data_t* data,
                       (Index_t*)dists_buffer_.data_handle(),
                       d_list_sizes_old_.data_handle(),
                       stream);
-
     // Tensor operations from `mma.h` are guarded with archicteture
     // __CUDA_ARCH__ >= 700. Since RAFT supports compilation for ARCH 600,
     // we need to ensure that `local_join_kernel` (which uses tensor) operations
@@ -1359,10 +1364,10 @@ void GNND<Data_t, Index_t>::build(Data_t* data,
     } else {
       THROW("NN_DESCENT cannot be run for __CUDA_ARCH__ < 700");
     }
-
     update_and_sample_thread.join();
 
     if (update_counter_ == -1) { break; }
+
     raft::copy(graph_host_buffer_.data_handle(),
                graph_buffer_.data_handle(),
                nrow_ * DEGREE_ON_DEVICE,
@@ -1372,20 +1377,27 @@ void GNND<Data_t, Index_t>::build(Data_t* data,
                dists_buffer_.data_handle(),
                nrow_ * DEGREE_ON_DEVICE,
                raft::resource::get_cuda_stream(res));
-
+    end   = raft::curTimeMillis();
+    start = raft::curTimeMillis();
     graph_.sample_graph_new(graph_host_buffer_.data_handle(), DEGREE_ON_DEVICE);
+    end = raft::curTimeMillis();
+    printf("Time for sample new graph here: %u\n", end - start);
   }
 
+  start = raft::curTimeMillis();
   graph_.update_graph(graph_host_buffer_.data_handle(),
                       dists_host_buffer_.data_handle(),
                       DEGREE_ON_DEVICE,
                       update_counter_);
   raft::resource::sync_stream(res);
+  end = raft::curTimeMillis();
+  printf("Time for update graph: %u\n", end - start);
   graph_.sort_lists();
 
   // Reuse graph_.h_dists as the buffer for shrink the lists in graph
   static_assert(sizeof(decltype(*(graph_.h_dists.data_handle()))) >= sizeof(Index_t));
 
+  start = raft::curTimeMillis();
   if (return_distances) {
     auto graph_d_dists = raft::make_device_matrix<DistData_t, int64_t, raft::row_major>(
       res, nrow_, build_config_.node_degree);
@@ -1405,6 +1417,8 @@ void GNND<Data_t, Index_t>::build(Data_t* data,
       res, raft::make_const_mdspan(graph_d_dists.view()), output_dist_view, coords);
     raft::resource::sync_stream(res);
   }
+  end = raft::curTimeMillis();
+  printf("Time for copying return dists: %u\n", end - start);
 
   Index_t* graph_shrink_buffer = (Index_t*)graph_.h_dists.data_handle();
 

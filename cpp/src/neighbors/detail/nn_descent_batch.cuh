@@ -392,9 +392,12 @@ void build_and_merge(raft::resources const& res,
 {
   // std::cout << "before calling build nnd cluster data " << cluster_data[0] << " " <<
   // cluster_data[1] << " num data in cluster " << num_data_in_cluster << std::endl;
+  auto start = raft::curTimeMillis();
   nnd.build(cluster_data, num_data_in_cluster, int_graph, true, batch_distances_d);
   // raft::print_host_vector("inverted indices", inverted_indices, 10, std::cout);
+  auto end = raft::curTimeMillis();
   // remap indices
+  auto start2 = raft::curTimeMillis();
 #pragma omp parallel for
   for (size_t i = 0; i < num_data_in_cluster; i++) {
     for (size_t j = 0; j < graph_degree; j++) {
@@ -407,12 +410,13 @@ void build_and_merge(raft::resources const& res,
              batch_indices_h,
              num_data_in_cluster * graph_degree,
              raft::resource::get_cuda_stream(res));
-
+  auto end2            = raft::curTimeMillis();
   size_t num_elems     = graph_degree * 2;
   size_t sharedMemSize = num_elems * (sizeof(float) + sizeof(IdxT) + sizeof(int16_t));
 
-// TODO: this kernel here needs to be protected by a mutex so that multiple threads don't end up
-// writing to it Use omp locks
+  // TODO: this kernel here needs to be protected by a mutex so that multiple threads don't end up
+  // writing to it Use omp locks
+  auto start3 = raft::curTimeMillis();
 #pragma omp critical
   {
     if (num_elems <= 128) {
@@ -461,6 +465,11 @@ void build_and_merge(raft::resources const& res,
     }
     raft::resource::sync_stream(res);
   }
+  auto end3 = raft::curTimeMillis();
+  std::cout << "\t[THREAD " << omp_get_thread_num() << "]"
+            << "time to NND build: " << end - start
+            << " / time to copy to batch indices: " << end2 - start2
+            << " / time to call merge kernel " << end3 - start3 << std::endl;
 }
 
 //
@@ -500,9 +509,11 @@ void cluster_nnd(raft::resources const& res,
       "# Data on host. Running clusters: %lu / %lu", cluster_id + 1, params.n_clusters);
     size_t num_data_in_cluster = cluster_size[cluster_id];
     size_t offset              = offsets[cluster_id];
-    std::cout << "[THREAD " << omp_get_thread_num() << "]"
-              << "num data in cluster: " << num_data_in_cluster << ", offset is:" << offset
-              << std::endl;
+    // std::cout << "[THREAD " << omp_get_thread_num() << "]"
+    //           << "num data in cluster: " << num_data_in_cluster <<  << std::endl;
+    auto start = raft::curTimeMillis();
+
+    auto start2 = raft::curTimeMillis();
 #pragma omp parallel for
     for (size_t i = 0; i < num_data_in_cluster; i++) {
       size_t global_row = (inverted_indices + offset)[i];
@@ -510,6 +521,8 @@ void cluster_nnd(raft::resources const& res,
         cluster_data_matrix(i, j) = dataset(global_row, j);
       }
     }
+    auto end2 = raft::curTimeMillis();
+
     build_and_merge<T, IdxT>(res,
                              params,
                              num_data_in_cluster,
@@ -526,6 +539,11 @@ void cluster_nnd(raft::resources const& res,
                              batch_distances_d,
                              nnd);
     nnd.reset(res);
+    auto end = raft::curTimeMillis();
+    std::cout << "[THREAD " << omp_get_thread_num() << "]"
+              << "num data in cluster: " << num_data_in_cluster
+              << " time to build and merge: " << end - start << " (" << end2 - start2 << ")"
+              << std::endl;
   }
 }
 
@@ -634,9 +652,138 @@ void batch_build(raft::resources const& res,
                        inverted_indices.view(),
                        cluster_size.view(),
                        offset.view());
-  raft::print_host_vector(
-    "cluster sizes", cluster_size.data_handle(), params.n_clusters, std::cout);
-  raft::print_host_vector("offsets", offset.data_handle(), params.n_clusters, std::cout);
+
+  if (intermediate_degree >= min_cluster_size) {
+    RAFT_LOG_WARN(
+      "Intermediate graph degree cannot be larger than minimum cluster size, reducing it to %lu",
+      dataset.extent(0));
+    intermediate_degree = min_cluster_size - 1;
+  }
+  if (intermediate_degree < graph_degree) {
+    RAFT_LOG_WARN(
+      "Graph degree (%lu) cannot be larger than intermediate graph degree (%lu), reducing "
+      "graph_degree.",
+      graph_degree,
+      intermediate_degree);
+    graph_degree = intermediate_degree;
+  }
+
+  size_t extended_graph_degree =
+    align32::roundUp(static_cast<size_t>(graph_degree * (graph_degree <= 32 ? 1.0 : 1.3)));
+  size_t extended_intermediate_degree = align32::roundUp(
+    static_cast<size_t>(intermediate_degree * (intermediate_degree <= 32 ? 1.0 : 1.3)));
+
+  auto int_graph = raft::make_host_matrix<int, int64_t, row_major>(
+    max_cluster_size, static_cast<int64_t>(extended_graph_degree));
+
+  BuildConfig build_config{.max_dataset_size      = max_cluster_size,
+                           .dataset_dim           = num_cols,
+                           .node_degree           = extended_graph_degree,
+                           .internal_node_degree  = extended_intermediate_degree,
+                           .max_iterations        = params.max_iterations,
+                           .termination_threshold = params.termination_threshold,
+                           .output_graph_degree   = graph_degree};
+
+  auto global_indices_h   = raft::make_managed_matrix<IdxT, int64_t>(res, num_rows, graph_degree);
+  auto global_distances_h = raft::make_managed_matrix<float, int64_t>(res, num_rows, graph_degree);
+
+  std::fill(global_indices_h.data_handle(),
+            global_indices_h.data_handle() + num_rows * graph_degree,
+            std::numeric_limits<IdxT>::max());
+  std::fill(global_distances_h.data_handle(),
+            global_distances_h.data_handle() + num_rows * graph_degree,
+            std::numeric_limits<float>::max());
+
+  auto batch_indices_h =
+    raft::make_host_matrix<IdxT, int64_t, row_major>(max_cluster_size, graph_degree);
+  auto batch_indices_d =
+    raft::make_device_matrix<IdxT, int64_t, row_major>(res, max_cluster_size, graph_degree);
+  auto batch_distances_d =
+    raft::make_device_matrix<float, int64_t, row_major>(res, max_cluster_size, graph_degree);
+
+  auto cluster_data_indices = raft::make_device_vector<IdxT, IdxT>(res, num_rows * k);
+  raft::copy(cluster_data_indices.data_handle(),
+             inverted_indices.data_handle(),
+             num_rows * k,
+             resource::get_cuda_stream(res));
+
+  cluster_nnd<T, IdxT>(res,
+                       params,
+                       graph_degree,
+                       extended_graph_degree,
+                       max_cluster_size,
+                       dataset,
+                       offset.data_handle(),
+                       cluster_size.data_handle(),
+                       cluster_data_indices.data_handle(),
+                       int_graph.data_handle(),
+                       inverted_indices.data_handle(),
+                       global_indices_h.data_handle(),
+                       global_distances_h.data_handle(),
+                       batch_indices_h.data_handle(),
+                       batch_indices_d.data_handle(),
+                       batch_distances_d.data_handle(),
+                       build_config,
+                       params.n_clusters);
+
+  raft::copy(global_idx.graph().data_handle(),
+             global_indices_h.data_handle(),
+             num_rows * graph_degree,
+             raft::resource::get_cuda_stream(res));
+  if (params.return_distances && global_idx.distances().has_value()) {
+    raft::copy(global_idx.distances().value().data_handle(),
+               global_distances_h.data_handle(),
+               num_rows * graph_degree,
+               raft::resource::get_cuda_stream(res));
+  }
+}
+
+template <typename T,
+          typename IdxT = uint32_t,
+          typename Accessor =
+            host_device_accessor<std::experimental::default_accessor<float>, memory_type::host>>
+void batch_build_mg(raft::resources const& res,
+                    const index_params& params,
+                    mdspan<const T, matrix_extent<int64_t>, row_major, Accessor> dataset,
+                    index<IdxT>& global_idx)
+{
+  size_t graph_degree        = params.graph_degree;
+  size_t intermediate_degree = params.intermediate_graph_degree;
+
+  size_t num_rows = static_cast<size_t>(dataset.extent(0));
+  size_t num_cols = static_cast<size_t>(dataset.extent(1));
+
+  auto centroids =
+    raft::make_device_matrix<T, IdxT, raft::row_major>(res, params.n_clusters, num_cols);
+  get_balanced_kmeans_centroids<T, IdxT>(res, params.metric, dataset, centroids.view());
+
+  size_t k                    = 2;
+  auto global_nearest_cluster = raft::make_host_matrix<IdxT, IdxT, raft::row_major>(num_rows, k);
+  get_global_nearest_k<T, IdxT>(res,
+                                k,
+                                num_rows,
+                                params.n_clusters,
+                                dataset.data_handle(),
+                                global_nearest_cluster.view(),
+                                centroids.view(),
+                                params.metric);
+
+  auto inverted_indices = raft::make_host_vector<IdxT, IdxT, raft::row_major>(num_rows * k);
+  auto cluster_size     = raft::make_host_vector<IdxT, IdxT, raft::row_major>(params.n_clusters);
+  auto offset           = raft::make_host_vector<IdxT, IdxT, raft::row_major>(params.n_clusters);
+
+  size_t max_cluster_size, min_cluster_size;
+  get_inverted_indices(res,
+                       params.n_clusters,
+                       max_cluster_size,
+                       min_cluster_size,
+                       global_nearest_cluster.view(),
+                       inverted_indices.view(),
+                       cluster_size.view(),
+                       offset.view());
+  // raft::print_host_vector(
+  //   "cluster sizes", cluster_size.data_handle(), params.n_clusters, std::cout);
+  // raft::print_host_vector("offsets", offset.data_handle(), params.n_clusters, std::cout);
 
   if (intermediate_degree >= min_cluster_size) {
     RAFT_LOG_WARN(
@@ -679,16 +826,22 @@ void batch_build(raft::resources const& res,
             global_distances_h.data_handle() + num_rows * graph_degree,
             std::numeric_limits<float>::max());
 
+  auto start                             = raft::curTimeMillis();
   const raft::comms::nccl_clique& clique = raft::resource::get_nccl_clique(res);
-  size_t clusters_per_rank               = params.n_clusters / clique.num_ranks_;
-  size_t rem = params.n_clusters - clusters_per_rank * clique.num_ranks_;
-  std::cout << "clusters per rank is: " << clusters_per_rank << "num ranks is" << clique.num_ranks_
-            << std::endl;
+  auto end                               = raft::curTimeMillis();
+
+  // printf("Time taken get nccl clique: %u ms\n", end - start);
+
+  size_t clusters_per_rank = params.n_clusters / clique.num_ranks_;
+  size_t rem               = params.n_clusters - clusters_per_rank * clique.num_ranks_;
+  // std::cout << "clusters per rank is: " << clusters_per_rank << "num ranks is" <<
+  // clique.num_ranks_
+  //           << std::endl;
 
 #pragma omp parallel for
   for (int rank = 0; rank < clique.num_ranks_; rank++) {
-    int dev_id                            = clique.device_ids_[0];
-    const raft::device_resources& dev_res = clique.device_resources_[0];
+    int dev_id                            = clique.device_ids_[rank];
+    const raft::device_resources& dev_res = clique.device_resources_[rank];
     RAFT_CUDA_TRY(cudaSetDevice(dev_id));
 
     size_t num_data_for_this_rank = 0;
@@ -700,9 +853,9 @@ void batch_build(raft::resources const& res,
     for (size_t p = 0; p < num_clusters_for_this_rank; p++) {
       num_data_for_this_rank += cluster_size(base_cluster_idx + p);
     }
-    std::cout << "rank " << rank << " base cluster idx for this rank is " << base_cluster_idx
-              << " num clusters for this rank " << num_clusters_for_this_rank
-              << " number of data for this rank is: " << num_data_for_this_rank << std::endl;
+    // std::cout << "rank " << rank << " base cluster idx for this rank is " << base_cluster_idx
+    //           << " num clusters for this rank " << num_clusters_for_this_rank
+    //           << " number of data for this rank is: " << num_data_for_this_rank << std::endl;
     auto int_graph = raft::make_host_matrix<int, int64_t, row_major>(
       max_cluster_size, static_cast<int64_t>(extended_graph_degree));
 
@@ -729,7 +882,7 @@ void batch_build(raft::resources const& res,
     // raft::print_host_vector("remapped offsets for each rank", offset.data_handle() +
     // base_cluster_idx, clusters_per_rank, std::cout);
 
-    cluster_nnd<T, IdxT>(res,
+    cluster_nnd<T, IdxT>(dev_res,
                          params,
                          graph_degree,
                          extended_graph_degree,
@@ -747,6 +900,7 @@ void batch_build(raft::resources const& res,
                          batch_distances_d.data_handle(),
                          build_config,
                          num_clusters_for_this_rank);
+    resource::sync_stream(dev_res);
   }
   // std::cout << "done cluster nnd snmg" << std::endl;
   raft::copy(global_idx.graph().data_handle(),
@@ -784,7 +938,14 @@ index<IdxT> batch_build(raft::resources const& res,
   index<IdxT> idx{
     res, dataset.extent(0), static_cast<int64_t>(graph_degree), params.return_distances};
 
-  batch_build(res, params, dataset, idx);
+  const raft::comms::nccl_clique& clique = raft::resource::get_nccl_clique(res);
+  if (clique.num_ranks_ > 1) {
+    printf("Running build. Should run MG batch nnd\n");
+    batch_build_mg(res, params, dataset, idx);
+  } else {
+    printf("Running build. SG batch nnd\n");
+    batch_build(res, params, dataset, idx);
+  }
 
   return idx;
 }
