@@ -1300,14 +1300,14 @@ void GNND<Data_t, Index_t>::build(Data_t* data,
   }
 
   graph_.clear();
-  auto start = raft::curTimeMillis();
+  // auto start = raft::curTimeMillis();
   graph_.init_random_graph();
-  auto end = raft::curTimeMillis();
-  printf("Time for init random graph: %u\n", end - start);
-  start = raft::curTimeMillis();
+  // auto end = raft::curTimeMillis();
+  // printf("Time for init random graph: %u\n", end - start);
+  // start = raft::curTimeMillis();
   graph_.sample_graph(true);
-  end = raft::curTimeMillis();
-  printf("Time for just sample graph: %u\n", end - start);
+  // end = raft::curTimeMillis();
+  // printf("Time for just sample graph: %u\n", end - start);
 
   auto update_and_sample = [&](bool update_graph) {
     if (update_graph) {
@@ -1385,9 +1385,9 @@ void GNND<Data_t, Index_t>::build(Data_t* data,
                dists_buffer_.data_handle(),
                nrow_ * DEGREE_ON_DEVICE,
                raft::resource::get_cuda_stream(res));
-    start = raft::curTimeMillis();
+    // start = raft::curTimeMillis();
     graph_.sample_graph_new(graph_host_buffer_.data_handle(), DEGREE_ON_DEVICE);
-    end = raft::curTimeMillis();
+    // end = raft::curTimeMillis();
     // printf("Time for sample new graph here: %u\n", end - start);
   }
 
