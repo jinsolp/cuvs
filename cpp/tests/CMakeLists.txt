@@ -173,6 +173,18 @@ if(BUILD_TESTS)
 
   ConfigureTest(
     NAME
+    NEIGHBORS_BATCH_KNN_TEST
+    PATH
+    neighbors/batch_knn/test_float.cu
+    GPUS
+    1
+    PERCENT
+    100
+    ADDITIONAL_DEP nccl
+  )
+
+  ConfigureTest(
+    NAME
     NEIGHBORS_ANN_VAMANA_TEST
     PATH
     neighbors/ann_vamana/test_float_uint32_t.cu
