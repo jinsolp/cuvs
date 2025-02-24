@@ -410,10 +410,15 @@ std::unique_ptr<batch_knn_builder<T, IdxT>> get_knn_builder(const raft::resource
                                                             size_t max_cluster_size)
 {
   if (index.build_algo == batch_knn::NN_DESCENT) {
+    std::cout << "getting knn builder. build algo is NND\n";
     auto nn_descent_params =
       std::get<graph_build_params::nn_descent_params>(params.graph_build_params);
-    return std::make_unique<batch_knn_builder_nn_descent<T, IdxT>>(
-      handle, index.n_clusters, nn_descent_params, min_cluster_size, max_cluster_size);
+    return std::make_unique<batch_knn_builder_nn_descent<T, IdxT>>(handle,
+                                                                   index.n_clusters,
+                                                                   nn_descent_params,
+                                                                   min_cluster_size,
+                                                                   max_cluster_size,
+                                                                   static_cast<size_t>(index.k));
   } else if (index.build_algo == batch_knn::IVF_PQ) {
     // auto ivf_pq_index_params = static_cast<ivf_pq::index_params>(index_params);
     // auto ivf_pq_search_params = static_cast<ivf_pq::search_params&>(search_params);
@@ -434,6 +439,7 @@ void single_gpu_batch_build(const raft::resources& handle,
                             T* global_distances,
                             size_t max_cluster_size,
                             batch_knn::index<IdxT, T>& index,
+                            const index_params& params,
                             raft::host_vector_view<IdxT, IdxT, row_major> cluster_sizes,
                             raft::host_vector_view<IdxT, IdxT, row_major> cluster_offsets,
                             raft::host_vector_view<IdxT, IdxT, row_major> inverted_indices)
@@ -442,7 +448,7 @@ void single_gpu_batch_build(const raft::resources& handle,
   size_t num_cols = dataset.extent(1);
 
   auto h_cluster_data = raft::make_host_matrix<T, int64_t, row_major>(max_cluster_size, num_cols);
-
+  std::cout << "looking at index k here " << index.k << std::endl;
   auto batch_indices_h =
     raft::make_host_matrix<IdxT, int64_t, row_major>(max_cluster_size, index.k);
   auto batch_indices_d =
@@ -467,7 +473,16 @@ void single_gpu_batch_build(const raft::resources& handle,
 
     // do the build now with the data.
     // if some requires device data, then do it
-    knn_builder.build_knn();
+    knn_builder.build_knn(handle,
+                          params,
+                          num_data_in_cluster,
+                          global_neighbors,
+                          global_distances,
+                          h_cluster_data.view(),
+                          inverted_indices.data_handle() + offset,
+                          batch_indices_h.view(),
+                          batch_indices_d.view(),
+                          batch_distances_d.view());
   }
 }
 
@@ -515,6 +530,13 @@ void build(const raft::resources& handle,
   auto global_neighbors = raft::make_managed_matrix<IdxT, int64_t>(handle, num_rows, index.k);
   auto global_distances = raft::make_managed_matrix<float, int64_t>(handle, num_rows, index.k);
 
+  std::fill(global_neighbors.data_handle(),
+            global_neighbors.data_handle() + num_rows * index.k,
+            std::numeric_limits<IdxT>::max());
+  std::fill(global_distances.data_handle(),
+            global_distances.data_handle() + num_rows * index.k,
+            std::numeric_limits<float>::max());
+
   const raft::comms::nccl_clique& clique = raft::resource::get_nccl_clique(handle);
   std::cout << "good up to this point!\n";
   std::unique_ptr<batch_knn_builder<T, IdxT>> knn_builder =
@@ -540,6 +562,7 @@ void build(const raft::resources& handle,
                            global_distances.data_handle(),
                            max_cluster_size,
                            index,
+                           params,
                            cluster_sizes.view(),
                            cluster_offsets.view(),
                            inverted_indices.view());
@@ -622,6 +645,7 @@ batch_knn::index<IdxT, T> build(const raft::resources& handle,
                                 const index_params& params,
                                 bool return_distances = false)  // distance type same as data type
 {
+  std::cout << "k is " << k << std::endl;
   batch_knn::index<IdxT, T> index{handle, dataset.extent(0), k, false};
   build(handle, dataset, index, params);
   return index;

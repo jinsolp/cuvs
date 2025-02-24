@@ -172,7 +172,7 @@ struct index_params : cuvs::neighbors::index_params {
    * cagra::graph_build_params::iterative_search_params();
    * @endcode
    */
-  std::variant<graph_build_params::ivf_pq_params, graph_build_params::nn_descent_params>
+  std::variant<graph_build_params::nn_descent_params, graph_build_params::ivf_pq_params>
     graph_build_params;
 
   bool attach_dataset_on_build = true;

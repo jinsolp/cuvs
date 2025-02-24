@@ -126,14 +126,13 @@ class BatchKNNTest : public ::testing::TestWithParam<AnnNNDescentBatchInputs> {
           //  batch_knn::build(
           //   handle_, database_host_view, (size_t)ps.graph_degree, params);
           // auto index = build(handle)
-          //   raft::copy(indices_NNDescent.data(), index.graph().data_handle(), queries_size,
-          //   stream_);
-          // if (index.distances().has_value()) {
-          //   raft::copy(distances_NNDescent.data(),
-          //              index.distances().value().data_handle(),
-          //              queries_size,
-          //              stream_);
-          // }
+          raft::copy(indices_NNDescent.data(), index.graph().data_handle(), queries_size, stream_);
+          if (index.distances().has_value()) {
+            raft::copy(distances_NNDescent.data(),
+                       index.distances().value().data_handle(),
+                       queries_size,
+                       stream_);
+          }
         }
         raft::resource::sync_stream(handle_);
       }
