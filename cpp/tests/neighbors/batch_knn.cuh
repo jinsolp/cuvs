@@ -106,27 +106,34 @@ class BatchKNNTest : public ::testing::TestWithParam<AnnNNDescentBatchInputs> {
         //  index_params.return_distances          = true;
         //  index_params.n_clusters                = ps.recall_cluster.second;
 
-        ivf_pq::index_params index_params;
-        ivf_pq::search_params search_params;
+        // ivf_pq::index_params index_params;
+        // ivf_pq::search_params search_params;
+        index_params params;  // NEED to change build_algo to be part of params
+
         //  auto database_view = raft::make_device_matrix_view<const DataT, int64_t>(
         //    (const DataT*)database.data(), ps.n_rows, ps.dim);
 
         {
+          // making dataset
           auto database_host = raft::make_host_matrix<DataT, int64_t>(ps.n_rows, ps.dim);
           raft::copy(database_host.data_handle(), database.data(), database.size(), stream_);
 
           auto database_host_view = raft::make_host_matrix_view<const DataT, int64_t>(
             (const DataT*)database_host.data_handle(), ps.n_rows, ps.dim);
 
-          auto index = batch_knn::build(
-            handle_, database_host_view, ps.graph_degree, index_params, search_params);
-          raft::copy(indices_NNDescent.data(), index.graph().data_handle(), queries_size, stream_);
-          if (index.distances().has_value()) {
-            raft::copy(distances_NNDescent.data(),
-                       index.distances().value().data_handle(),
-                       queries_size,
-                       stream_);
-          }
+          auto index =
+            build(handle_, database_host_view, static_cast<int64_t>(ps.graph_degree), params);
+          //  batch_knn::build(
+          //   handle_, database_host_view, (size_t)ps.graph_degree, params);
+          // auto index = build(handle)
+          //   raft::copy(indices_NNDescent.data(), index.graph().data_handle(), queries_size,
+          //   stream_);
+          // if (index.distances().has_value()) {
+          //   raft::copy(distances_NNDescent.data(),
+          //              index.distances().value().data_handle(),
+          //              queries_size,
+          //              stream_);
+          // }
         }
         raft::resource::sync_stream(handle_);
       }

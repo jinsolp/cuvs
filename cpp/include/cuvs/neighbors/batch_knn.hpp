@@ -18,8 +18,11 @@
 
 #include <cuvs/neighbors/common.hpp>
 #include <cuvs/neighbors/ivf_pq.hpp>
+#include <cuvs/neighbors/nn_descent.hpp>
 
 #include <raft/core/host_mdarray.hpp>
+
+#include <variant>
 
 namespace cuvs::neighbors::batch_knn {
 
@@ -113,10 +116,71 @@ struct index : cuvs::neighbors::index {
   // size_t n_clusters;
 };
 
+/**
+ * @brief ANN parameters used by CAGRA to build knn graph
+ *
+ */
+namespace graph_build_params {
+
+/** Specialized parameters utilizing IVF-PQ to build knn graph */
+struct ivf_pq_params {
+  cuvs::neighbors::ivf_pq::index_params build_params;
+  cuvs::neighbors::ivf_pq::search_params search_params;
+  float refinement_rate;
+
+  ivf_pq_params() = default;
+  /**
+   * Set default parameters based on shape of the input dataset.
+   * Usage example:
+   * @code{.cpp}
+   *   using namespace cuvs::neighbors;
+   *   raft::resources res;
+   *   // create index_params for a [N. D] dataset
+   *   auto dataset = raft::make_device_matrix<float, int64_t>(res, N, D);
+   *   auto pq_params =
+   *     cagra::graph_build_params::ivf_pq_params(dataset.extents());
+   *   // modify/update index_params as needed
+   *   pq_params.kmeans_trainset_fraction = 0.1;
+   * @endcode
+   */
+  ivf_pq_params(raft::matrix_extent<int64_t> dataset_extents,
+                cuvs::distance::DistanceType metric = cuvs::distance::DistanceType::L2Expanded);
+};
+
+using nn_descent_params = cuvs::neighbors::nn_descent::index_params;
+}  // namespace graph_build_params
+
+struct index_params : cuvs::neighbors::index_params {
+  /** Parameters for graph building.
+   *
+   * Set ivf_pq_params, nn_descent_params, or iterative_search_params to select the graph build
+   * algorithm and control their parameters. The default (std::monostate) is to use a heuristic
+   *  to decide the algorithm and its parameters.
+   *
+   * @code{.cpp}
+   * cagra::index_params params;
+   * // 1. Choose IVF-PQ algorithm
+   * params.graph_build_params = cagra::graph_build_params::ivf_pq_params(dataset.extent,
+   * params.metric);
+   *
+   * // 2. Choose NN Descent algorithm for kNN graph construction
+   * params.graph_build_params =
+   * cagra::graph_build_params::nn_descent_params(params.intermediate_graph_degree);
+   *
+   * // 3. Choose iterative graph building using CAGRA's search() and optimize()  [Experimental]
+   * params.graph_build_params =
+   * cagra::graph_build_params::iterative_search_params();
+   * @endcode
+   */
+  std::variant<graph_build_params::ivf_pq_params, graph_build_params::nn_descent_params>
+    graph_build_params;
+
+  bool attach_dataset_on_build = true;
+};
+
 auto build(const raft::resources& handle,
            raft::host_matrix_view<const float, int64_t, row_major> index_dataset,
            int64_t k,
-           const ivf_pq::index_params& index_params,
-           const ivf_pq::search_params& search_params) -> index<int64_t, float>;
+           const index_params& params) -> index<int64_t, float>;
 
 }  // namespace cuvs::neighbors::batch_knn

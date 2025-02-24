@@ -15,6 +15,7 @@
  */
 
 #include "batch_knn.cuh"
+#include "cuvs/neighbors/common.hpp"
 //  #include <cuvs/neighbors/batch_knn.hpp>
 //  #include "cuvs/neighbors/ivf_pq.hpp"
 
@@ -25,10 +26,9 @@ namespace cuvs::neighbors::batch_knn {
   batch_knn::index<IdxT, T> build(const raft::resources& handle,                               \
                                   raft::host_matrix_view<const T, int64_t, row_major> dataset, \
                                   int64_t k,                                                   \
-                                  const ivf_pq::index_params& index_params,                    \
-                                  const ivf_pq::search_params& search_params)                  \
+                                  const index_params& params)                                  \
   {                                                                                            \
-    return batch_knn::detail::build<T, IdxT>(handle, dataset, k, index_params, search_params); \
+    return batch_knn::detail::build<T, IdxT>(handle, dataset, k, params);                      \
   }
 
 CUVS_INST_BATCH_KNN_IVF_PQ(float, int64_t);
