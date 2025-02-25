@@ -448,7 +448,7 @@ void single_gpu_batch_build(const raft::resources& handle,
   size_t num_cols = dataset.extent(1);
 
   auto h_cluster_data = raft::make_host_matrix<T, int64_t, row_major>(max_cluster_size, num_cols);
-  std::cout << "looking at index k here " << index.k << std::endl;
+
   auto batch_indices_h =
     raft::make_host_matrix<IdxT, int64_t, row_major>(max_cluster_size, index.k);
   auto batch_indices_d =

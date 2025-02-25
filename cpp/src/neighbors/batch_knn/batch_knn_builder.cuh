@@ -50,13 +50,13 @@ struct CustomKeyComparator {
 };
 
 template <typename IdxT, int BLOCK_SIZE, int ITEMS_PER_THREAD>
-RAFT_KERNEL merge_subgraphs(IdxT* cluster_data_indices,
-                            size_t graph_degree,
-                            size_t num_cluster_in_batch,
-                            float* global_distances,
-                            float* batch_distances,
-                            IdxT* global_indices,
-                            IdxT* batch_indices)
+RAFT_KERNEL merge_subgraphs_kernel(IdxT* cluster_data_indices,
+                                   size_t graph_degree,
+                                   size_t num_cluster_in_batch,
+                                   float* global_distances,
+                                   float* batch_distances,
+                                   IdxT* global_indices,
+                                   IdxT* batch_indices)
 {
   size_t batch_row = blockIdx.x;
   typedef cub::BlockMergeSort<KeyValuePair<float, IdxT>, BLOCK_SIZE, ITEMS_PER_THREAD>
@@ -157,6 +157,68 @@ RAFT_KERNEL merge_subgraphs(IdxT* cluster_data_indices,
       }
     }
   }
+}
+
+template <typename T,
+          typename IdxT = uint32_t,
+          typename Accessor =
+            host_device_accessor<std::experimental::default_accessor<T>, memory_type::host>>
+void merge_subgraphs(raft::resources const& res,
+                     size_t k,
+                     size_t num_data_in_cluster,
+                     IdxT* inverted_indices_d,
+                     T* global_distances,
+                     T* batch_distances_d,
+                     IdxT* global_neighbors,
+                     IdxT* batch_indices_d)
+{
+  size_t num_elems     = k * 2;
+  size_t sharedMemSize = num_elems * (sizeof(float) + sizeof(IdxT) + sizeof(int16_t));
+  if (num_elems <= 128) {
+    merge_subgraphs_kernel<IdxT, 32, 4>
+      <<<num_data_in_cluster, 32, sharedMemSize, raft::resource::get_cuda_stream(res)>>>(
+        inverted_indices_d,
+        k,
+        num_data_in_cluster,
+        global_distances,
+        batch_distances_d,
+        global_neighbors,
+        batch_indices_d);
+  } else if (num_elems <= 512) {
+    merge_subgraphs_kernel<IdxT, 128, 4>
+      <<<num_data_in_cluster, 128, sharedMemSize, raft::resource::get_cuda_stream(res)>>>(
+        inverted_indices_d,
+        k,
+        num_data_in_cluster,
+        global_distances,
+        batch_distances_d,
+        global_neighbors,
+        batch_indices_d);
+  } else if (num_elems <= 1024) {
+    merge_subgraphs_kernel<IdxT, 128, 8>
+      <<<num_data_in_cluster, 128, sharedMemSize, raft::resource::get_cuda_stream(res)>>>(
+        inverted_indices_d,
+        k,
+        num_data_in_cluster,
+        global_distances,
+        batch_distances_d,
+        global_neighbors,
+        batch_indices_d);
+  } else if (num_elems <= 2048) {
+    merge_subgraphs_kernel<IdxT, 256, 8>
+      <<<num_data_in_cluster, 256, sharedMemSize, raft::resource::get_cuda_stream(res)>>>(
+        inverted_indices_d,
+        k,
+        num_data_in_cluster,
+        global_distances,
+        batch_distances_d,
+        global_neighbors,
+        batch_indices_d);
+  } else {
+    // this is as far as we can get due to the shared mem usage of cub::BlockMergeSort
+    RAFT_FAIL("The degree of knn is too large (%lu). It must be smaller than 1024", k);
+  }
+  raft::resource::sync_stream(res);
 }
 
 template <typename T, typename IdxT = int64_t>
@@ -261,12 +323,8 @@ struct batch_knn_builder_nn_descent : public batch_knn_builder<T, IdxT> {
       min_cluster_size{min_cluster_size},
       max_cluster_size{max_cluster_size}
   {
-    // n_clusters       = n_clusters;
     index_params = index_params;
-    // min_cluster_size = min_cluster_size;
-    // max_cluster_size = max_cluster_size;
 
-    // k = k;
     std::cout << "max slucter size: " << max_cluster_size << " min: " << min_cluster_size
               << " k : " << k << std::endl;
     // make int graph
@@ -276,8 +334,6 @@ struct batch_knn_builder_nn_descent : public batch_knn_builder<T, IdxT> {
   {
     size_t intermediate_degree = index_params.intermediate_graph_degree;
     size_t graph_degree        = k;
-    // std::cout << "k: " << k << " graph defree: "<< graph_degree << " intermed " <<
-    // intermediate_degree << std::endl;
 
     if (intermediate_degree >= min_cluster_size) { intermediate_degree = min_cluster_size - 1; }
 
@@ -302,16 +358,13 @@ struct batch_knn_builder_nn_descent : public batch_knn_builder<T, IdxT> {
     build_config.max_iterations        = index_params.max_iterations;
     build_config.termination_threshold = index_params.termination_threshold;
     build_config.output_graph_degree   = graph_degree;
-    std::cout << "max iters " << build_config.max_iterations << std::endl;
     if (!nnd_builder.has_value()) {
-      // std::cout << "gnnd is prepared for NND build\n";
       // Initialize nnd_builder in the first call to prepare_build
       nnd_builder.emplace(res, build_config);
     }
     int_graph.emplace(raft::make_host_matrix<int, int64_t, row_major>(
       max_cluster_size, static_cast<int64_t>(extended_graph_degree)));
     inverted_indices_d.emplace(raft::make_device_vector<IdxT, IdxT>(res, max_cluster_size));
-    // nnd_builder = nn_descent::detail::GNND<const T, int>(res, build_config);
   }
 
   void build_knn(raft::resources const& res,
@@ -326,9 +379,6 @@ struct batch_knn_builder_nn_descent : public batch_knn_builder<T, IdxT> {
                  raft::device_matrix_view<T, int64_t, row_major> batch_distances_d) override
   {
     // build for nnd, search and refinement for ivfpq
-    std::cout << "attempting to build knn with overrode function in nnd builder\n";
-    // size_t k = batch_indices_h.extent(1);
-    std::cout << "k got " << k << std::endl;
     if (nnd_builder.has_value()) {
       auto int_graph_ptr = int_graph.value().data_handle();
       nnd_builder.value().build(dataset.data_handle(),
@@ -337,10 +387,7 @@ struct batch_knn_builder_nn_descent : public batch_knn_builder<T, IdxT> {
                                 true,
                                 batch_distances_d.data_handle());
     }
-    // nnd_builder.value().build(dataset.data_handle(), (int)num_data_in_cluster,
-    // int_graph.value().data_handle(), true, batch_distances_d.data_handle());
 
-    std::cout << "done building nnd here\n";
     // remap indices
 #pragma omp parallel for
     for (size_t i = 0; i < num_data_in_cluster; i++) {
@@ -360,61 +407,69 @@ struct batch_knn_builder_nn_descent : public batch_knn_builder<T, IdxT> {
                num_data_in_cluster * k,
                raft::resource::get_cuda_stream(res));
 
-    raft::print_host_vector("global neighbors", global_neighbors, k, std::cout);
-    raft::print_host_vector("global distances", global_distances, k, std::cout);
-    raft::print_device_vector("batch indices", batch_indices_d.data_handle(), k, std::cout);
-    raft::print_device_vector("batch distances", batch_distances_d.data_handle(), k, std::cout);
+    merge_subgraphs(res,
+                    k,
+                    num_data_in_cluster,
+                    inverted_indices_d.value().data_handle(),
+                    global_distances,
+                    batch_distances_d.data_handle(),
+                    global_neighbors,
+                    batch_indices_d.data_handle());
+    //             size_t k,
+    //            size_t num_data_in_cluster,
+    //          IdxT* inverted_indices_d,
+    //        T* global_distances,
+    //      T* batch_distances_d,
+    //    IdxT* global_neighbors,
+    //  IdxT* batch_indices_d)
 
-    size_t num_elems     = k * 2;
-    size_t sharedMemSize = num_elems * (sizeof(float) + sizeof(IdxT) + sizeof(int16_t));
-    std::cout << "done building nnd here222\n";
-    if (num_elems <= 128) {
-      merge_subgraphs<IdxT, 32, 4>
-        <<<num_data_in_cluster, 32, sharedMemSize, raft::resource::get_cuda_stream(res)>>>(
-          inverted_indices_d.value().data_handle(),
-          k,
-          num_data_in_cluster,
-          global_distances,
-          batch_distances_d.data_handle(),
-          global_neighbors,
-          batch_indices_d.data_handle());
-    } else if (num_elems <= 512) {
-      merge_subgraphs<IdxT, 128, 4>
-        <<<num_data_in_cluster, 128, sharedMemSize, raft::resource::get_cuda_stream(res)>>>(
-          inverted_indices_d.value().data_handle(),
-          k,
-          num_data_in_cluster,
-          global_distances,
-          batch_distances_d.data_handle(),
-          global_neighbors,
-          batch_indices_d.data_handle());
-    } else if (num_elems <= 1024) {
-      merge_subgraphs<IdxT, 128, 8>
-        <<<num_data_in_cluster, 128, sharedMemSize, raft::resource::get_cuda_stream(res)>>>(
-          inverted_indices_d.value().data_handle(),
-          k,
-          num_data_in_cluster,
-          global_distances,
-          batch_distances_d.data_handle(),
-          global_neighbors,
-          batch_indices_d.data_handle());
-    } else if (num_elems <= 2048) {
-      merge_subgraphs<IdxT, 256, 8>
-        <<<num_data_in_cluster, 256, sharedMemSize, raft::resource::get_cuda_stream(res)>>>(
-          inverted_indices_d.value().data_handle(),
-          k,
-          num_data_in_cluster,
-          global_distances,
-          batch_distances_d.data_handle(),
-          global_neighbors,
-          batch_indices_d.data_handle());
-    } else {
-      // this is as far as we can get due to the shared mem usage of cub::BlockMergeSort
-      RAFT_FAIL("The degree of knn is too large (%lu). It must be smaller than 1024", k);
-    }
-    raft::resource::sync_stream(res);
-    raft::print_host_vector("AFTER global neighbors", global_neighbors, k, std::cout);
-    raft::print_host_vector("AFTER global distances", global_distances, k, std::cout);
+    // size_t num_elems     = k * 2;
+    // size_t sharedMemSize = num_elems * (sizeof(float) + sizeof(IdxT) + sizeof(int16_t));
+    // if (num_elems <= 128) {
+    //   merge_subgraphs<IdxT, 32, 4>
+    //     <<<num_data_in_cluster, 32, sharedMemSize, raft::resource::get_cuda_stream(res)>>>(
+    //       inverted_indices_d.value().data_handle(),
+    //       k,
+    //       num_data_in_cluster,
+    //       global_distances,
+    //       batch_distances_d.data_handle(),
+    //       global_neighbors,
+    //       batch_indices_d.data_handle());
+    // } else if (num_elems <= 512) {
+    //   merge_subgraphs<IdxT, 128, 4>
+    //     <<<num_data_in_cluster, 128, sharedMemSize, raft::resource::get_cuda_stream(res)>>>(
+    //       inverted_indices_d.value().data_handle(),
+    //       k,
+    //       num_data_in_cluster,
+    //       global_distances,
+    //       batch_distances_d.data_handle(),
+    //       global_neighbors,
+    //       batch_indices_d.data_handle());
+    // } else if (num_elems <= 1024) {
+    //   merge_subgraphs<IdxT, 128, 8>
+    //     <<<num_data_in_cluster, 128, sharedMemSize, raft::resource::get_cuda_stream(res)>>>(
+    //       inverted_indices_d.value().data_handle(),
+    //       k,
+    //       num_data_in_cluster,
+    //       global_distances,
+    //       batch_distances_d.data_handle(),
+    //       global_neighbors,
+    //       batch_indices_d.data_handle());
+    // } else if (num_elems <= 2048) {
+    //   merge_subgraphs<IdxT, 256, 8>
+    //     <<<num_data_in_cluster, 256, sharedMemSize, raft::resource::get_cuda_stream(res)>>>(
+    //       inverted_indices_d.value().data_handle(),
+    //       k,
+    //       num_data_in_cluster,
+    //       global_distances,
+    //       batch_distances_d.data_handle(),
+    //       global_neighbors,
+    //       batch_indices_d.data_handle());
+    // } else {
+    //   // this is as far as we can get due to the shared mem usage of cub::BlockMergeSort
+    //   RAFT_FAIL("The degree of knn is too large (%lu). It must be smaller than 1024", k);
+    // }
+    // raft::resource::sync_stream(res);
   }
 
   raft::resources const& res;
