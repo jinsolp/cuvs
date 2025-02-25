@@ -19,8 +19,10 @@
 #include "../detail/nn_descent.cuh"
 #include "cuvs/neighbors/ivf_pq.hpp"
 #include "cuvs/neighbors/nn_descent.hpp"
+#include <cstddef>
 #include <cuda.h>
 #include <raft/core/device_mdspan.hpp>
+#include <raft/core/host_mdarray.hpp>
 #include <raft/core/mdspan_types.hpp>
 #include <raft/core/resource/cuda_stream.hpp>
 #include <raft/core/resources.hpp>
@@ -28,6 +30,7 @@
 #include <raft/util/cudart_utils.hpp>
 //  #include "batch_knn_common.cuh"
 #include "cuvs/neighbors/batch_knn.hpp"
+#include "cuvs/neighbors/refine.hpp"
 
 namespace cuvs::neighbors::batch_knn::detail {
 using namespace cuvs::neighbors;
@@ -249,23 +252,33 @@ template <typename T, typename IdxT = int64_t>
 struct batch_knn_builder_ivfpq : public batch_knn_builder<T, IdxT> {
   batch_knn_builder_ivfpq(raft::resources const& res,
                           size_t n_clusters,
-                          batch_knn::graph_build_params::ivf_pq_params& params)
+                          batch_knn::graph_build_params::ivf_pq_params& params,
+                          size_t min_cluster_size,
+                          size_t max_cluster_size,
+                          size_t k)
     : batch_knn_builder<T, IdxT>(),
       res{res},
       index_params{params.build_params},
-      search_params{params.search_params}
+      search_params{params.search_params},
+      k{k},
+      n_clusters{n_clusters},
+      min_cluster_size{min_cluster_size},
+      max_cluster_size{max_cluster_size}
   {
     // index_params    = params.build_params;
     // search_params   = params.search_params;
     // index = ivf_pq::index<IdxT>(res);
-    index_params.add_data_on_build = false;
-    refinement_rate                = 2.0;
-    n_clusters                     = n_clusters;
+    // index_params.add_data_on_build = false;
+    refinement_rate = 2.0;
+    // n_clusters                     = n_clusters;
   }
 
   void prepare_build(raft::host_matrix_view<const T, int64_t, row_major> dataset) override
   {
     // build ivf-pq index on a random subset for efficient GPU memory usage
+
+    std::cout << "index params add dat aon build " << index_params.add_data_on_build
+              << "  n clusters " << n_clusters << " n lists " << index_params.n_lists << std::endl;
     size_t num_rows = static_cast<size_t>(dataset.extent(0));
     size_t num_cols = static_cast<size_t>(dataset.extent(1));
     size_t num_subsamples =
@@ -280,8 +293,25 @@ struct batch_knn_builder_ivfpq : public batch_knn_builder<T, IdxT> {
 
     // auto ress = cuvs::neighbors::ivf_pq::build(res, index_params,
     // raft::make_const_mdspan(d_dataset_subsample.view()));
+    index_params.n_lists = 10;  // re-do this
+    std::cout << "n lists here " << index_params.n_lists << std::endl;
     index.emplace(cuvs::neighbors::ivf_pq::build(
       res, index_params, raft::make_const_mdspan(d_dataset_subsample.view())));
+
+    size_t top_k     = k + 1;
+    size_t gpu_top_k = k * refinement_rate;
+    gpu_top_k        = std::min<IdxT>(std::max(gpu_top_k, top_k), min_cluster_size);
+
+    queries_d.emplace(
+      raft::make_device_matrix<T, int64_t, row_major>(res, max_cluster_size, num_cols));
+    data_d.emplace(
+      raft::make_device_matrix<T, int64_t, row_major>(res, max_cluster_size, num_cols));
+    distances_candidate_d.emplace(
+      raft::make_device_matrix<T, int64_t, row_major>(res, max_cluster_size, gpu_top_k));
+    neighbors_candidate_d.emplace(
+      raft::make_device_matrix<IdxT, int64_t, row_major>(res, max_cluster_size, gpu_top_k));
+    inverted_indices_d.emplace(raft::make_device_vector<IdxT, IdxT>(res, max_cluster_size));
+    // we might have to send this to multiple GPUs if multi-gpu setting
   }
 
   void build_knn(raft::resources const& res,
@@ -297,15 +327,102 @@ struct batch_knn_builder_ivfpq : public batch_knn_builder<T, IdxT> {
   {
     // build for nnd, search and refinement for ivfpq
     std::cout << "attempting to build knn with overrode function in ivfpq builder\n";
+
+    size_t num_cols = dataset.extent(1);
+    raft::copy(queries_d.value().data_handle(),
+               dataset.data_handle(),
+               num_data_in_cluster * num_cols,
+               raft::resource::get_cuda_stream(res));
+    raft::copy(data_d.value().data_handle(),
+               queries_d.value().data_handle(),
+               num_data_in_cluster * num_cols,
+               raft::resource::get_cuda_stream(res));
+
+    size_t top_k     = k + 1;
+    size_t gpu_top_k = k * refinement_rate;
+    gpu_top_k        = std::min<IdxT>(std::max(gpu_top_k, top_k), min_cluster_size);
+
+    auto queries_view = raft::make_device_matrix_view<const T, int64_t>(
+      queries_d.value().data_handle(), num_data_in_cluster, dataset.extent(1));
+    auto distances_candidate_view = raft::make_device_matrix_view<T, int64_t>(
+      distances_candidate_d.value().data_handle(), num_data_in_cluster, gpu_top_k);
+    auto neighbors_candidate_view = raft::make_device_matrix_view<IdxT, int64_t>(
+      neighbors_candidate_d.value().data_handle(), num_data_in_cluster, gpu_top_k);
+    std::cout << " k is: " << k << " num data in cluster: " << num_data_in_cluster << std::endl;
+    cuvs::neighbors::ivf_pq::search(res,
+                                    search_params,
+                                    index.value(),
+                                    queries_view,
+                                    neighbors_candidate_view,
+                                    distances_candidate_view);
+
+    auto resulting_indices_d = raft::make_device_matrix_view<IdxT, int64_t>(
+      batch_indices_d.data_handle(), num_data_in_cluster, k);
+    auto resulting_distances_d = raft::make_device_matrix_view<T, int64_t>(
+      batch_distances_d.data_handle(), num_data_in_cluster, k);
+
+    auto data_view =
+      raft::make_device_matrix_view(data_d.value().data_handle(), num_data_in_cluster, num_cols);
+    refine(res,
+           raft::make_const_mdspan(queries_view),
+           raft::make_const_mdspan(data_view),
+           raft::make_const_mdspan(neighbors_candidate_view),
+           resulting_indices_d,
+           resulting_distances_d);  // define metric here too
+    // refine includes itself
+
+    auto tmp_indices_h = raft::make_host_matrix<IdxT, int64_t>(num_data_in_cluster, k);
+    raft::copy(tmp_indices_h.data_handle(),
+               batch_indices_d.data_handle(),
+               num_data_in_cluster * k,
+               raft::resource::get_cuda_stream(res));
+
+    // remap indices
+#pragma omp parallel for
+    for (size_t i = 0; i < num_data_in_cluster; i++) {
+      for (size_t j = 0; j < k; j++) {
+        size_t local_idx      = tmp_indices_h(i, j);
+        batch_indices_h(i, j) = inverted_indices[local_idx];
+      }
+    }
+
+    raft::copy(inverted_indices_d.value().data_handle(),
+               inverted_indices,
+               num_data_in_cluster,
+               raft::resource::get_cuda_stream(res));
+
+    raft::copy(batch_indices_d.data_handle(),
+               batch_indices_h.data_handle(),
+               num_data_in_cluster * k,
+               raft::resource::get_cuda_stream(res));
+
+    merge_subgraphs(res,
+                    k,
+                    num_data_in_cluster,
+                    inverted_indices_d.value().data_handle(),
+                    global_distances,
+                    batch_distances_d.data_handle(),
+                    global_neighbors,
+                    batch_indices_d.data_handle());
+
+    // we need to ensure the copy operations are done prior using the host data
+    raft::resource::sync_stream(res);
   }
 
   // TODO: index doesn't need init?
-  ivf_pq::index_params& index_params;
-  ivf_pq::search_params& search_params;
+  ivf_pq::index_params index_params;
+  ivf_pq::search_params search_params;
   float refinement_rate;
   std::optional<ivf_pq::index<IdxT>> index;
   raft::resources const& res;
-  size_t n_clusters;
+  size_t n_clusters, min_cluster_size, max_cluster_size, k;
+  // int64_t kMaxQueries = 4096;
+
+  std::optional<raft::device_matrix<T, int64_t>> queries_d;
+  std::optional<raft::device_matrix<T, int64_t>> data_d;
+  std::optional<raft::device_matrix<T, int64_t>> distances_candidate_d;
+  std::optional<raft::device_matrix<IdxT, int64_t>> neighbors_candidate_d;
+  std::optional<raft::device_vector<IdxT, int64_t>> inverted_indices_d;
 };
 
 template <typename T, typename IdxT = int64_t>
@@ -415,61 +532,6 @@ struct batch_knn_builder_nn_descent : public batch_knn_builder<T, IdxT> {
                     batch_distances_d.data_handle(),
                     global_neighbors,
                     batch_indices_d.data_handle());
-    //             size_t k,
-    //            size_t num_data_in_cluster,
-    //          IdxT* inverted_indices_d,
-    //        T* global_distances,
-    //      T* batch_distances_d,
-    //    IdxT* global_neighbors,
-    //  IdxT* batch_indices_d)
-
-    // size_t num_elems     = k * 2;
-    // size_t sharedMemSize = num_elems * (sizeof(float) + sizeof(IdxT) + sizeof(int16_t));
-    // if (num_elems <= 128) {
-    //   merge_subgraphs<IdxT, 32, 4>
-    //     <<<num_data_in_cluster, 32, sharedMemSize, raft::resource::get_cuda_stream(res)>>>(
-    //       inverted_indices_d.value().data_handle(),
-    //       k,
-    //       num_data_in_cluster,
-    //       global_distances,
-    //       batch_distances_d.data_handle(),
-    //       global_neighbors,
-    //       batch_indices_d.data_handle());
-    // } else if (num_elems <= 512) {
-    //   merge_subgraphs<IdxT, 128, 4>
-    //     <<<num_data_in_cluster, 128, sharedMemSize, raft::resource::get_cuda_stream(res)>>>(
-    //       inverted_indices_d.value().data_handle(),
-    //       k,
-    //       num_data_in_cluster,
-    //       global_distances,
-    //       batch_distances_d.data_handle(),
-    //       global_neighbors,
-    //       batch_indices_d.data_handle());
-    // } else if (num_elems <= 1024) {
-    //   merge_subgraphs<IdxT, 128, 8>
-    //     <<<num_data_in_cluster, 128, sharedMemSize, raft::resource::get_cuda_stream(res)>>>(
-    //       inverted_indices_d.value().data_handle(),
-    //       k,
-    //       num_data_in_cluster,
-    //       global_distances,
-    //       batch_distances_d.data_handle(),
-    //       global_neighbors,
-    //       batch_indices_d.data_handle());
-    // } else if (num_elems <= 2048) {
-    //   merge_subgraphs<IdxT, 256, 8>
-    //     <<<num_data_in_cluster, 256, sharedMemSize, raft::resource::get_cuda_stream(res)>>>(
-    //       inverted_indices_d.value().data_handle(),
-    //       k,
-    //       num_data_in_cluster,
-    //       global_distances,
-    //       batch_distances_d.data_handle(),
-    //       global_neighbors,
-    //       batch_indices_d.data_handle());
-    // } else {
-    //   // this is as far as we can get due to the shared mem usage of cub::BlockMergeSort
-    //   RAFT_FAIL("The degree of knn is too large (%lu). It must be smaller than 1024", k);
-    // }
-    // raft::resource::sync_stream(res);
   }
 
   raft::resources const& res;

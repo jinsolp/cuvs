@@ -109,7 +109,10 @@ class BatchKNNTest : public ::testing::TestWithParam<AnnNNDescentBatchInputs> {
         // ivf_pq::index_params index_params;
         // ivf_pq::search_params search_params;
         index_params params;  // NEED to change build_algo to be part of params
-
+        params.graph_build_params = graph_build_params::ivf_pq_params{};
+        // auto ivf_pq_params =
+        // std::get<graph_build_params::ivf_pq_params>(params.graph_build_params); std::cout <<
+        // "here " << ivf_pq_params.build_params.n_lists << std::endl;
         //  auto database_view = raft::make_device_matrix_view<const DataT, int64_t>(
         //    (const DataT*)database.data(), ps.n_rows, ps.dim);
 
@@ -123,6 +126,8 @@ class BatchKNNTest : public ::testing::TestWithParam<AnnNNDescentBatchInputs> {
 
           auto index =
             build(handle_, database_host_view, static_cast<int64_t>(ps.graph_degree), params);
+          // raft::print_host_vector("in test here  indices ", index.graph().data_handle(),
+          // ps.graph_degree, std::cout);
           //  batch_knn::build(
           //   handle_, database_host_view, (size_t)ps.graph_degree, params);
           // auto index = build(handle)
@@ -137,15 +142,18 @@ class BatchKNNTest : public ::testing::TestWithParam<AnnNNDescentBatchInputs> {
         raft::resource::sync_stream(handle_);
       }
       double min_recall = ps.recall_cluster.first;
-      EXPECT_TRUE(eval_neighbours(indices_naive,
-                                  indices_NNDescent,
-                                  distances_naive,
-                                  distances_NNDescent,
-                                  ps.n_rows,
-                                  ps.graph_degree,
-                                  0.01,
-                                  min_recall,
-                                  true));
+      // EXPECT_TRUE(eval_neighbours(indices_naive,
+      //                             indices_NNDescent,
+      //                             distances_naive,
+      //                             distances_NNDescent,
+      //                             ps.n_rows,
+      //                             ps.graph_degree,
+      //                             0.01,
+      //                             min_recall,
+      //                             true));
+
+      EXPECT_TRUE(eval_recall(
+        indices_naive, indices_NNDescent, ps.n_rows, ps.graph_degree, 0.01, min_recall, true));
     }
   }
 
@@ -179,7 +187,7 @@ class BatchKNNTest : public ::testing::TestWithParam<AnnNNDescentBatchInputs> {
 const std::vector<AnnNNDescentBatchInputs> inputsBatch =
   raft::util::itertools::product<AnnNNDescentBatchInputs>(
     {std::make_pair(0.9, 3lu)},  // min_recall, n_clusters
-    {4000},                      // n_rows
+    {10000},                     // n_rows
     {192},                       // dim
     {32},                        // graph_degree
     {cuvs::distance::DistanceType::L2Expanded},

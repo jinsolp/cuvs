@@ -36,7 +36,7 @@ struct index : cuvs::neighbors::index {
         int64_t k,
         bool return_distances               = false,
         cuvs::distance::DistanceType metric = cuvs::distance::DistanceType::L2Expanded,
-        knn_build_algo build_algo           = NN_DESCENT,
+        knn_build_algo build_algo           = IVF_PQ,
         size_t n_clusters                   = 4)
     : cuvs::neighbors::index(),
       res{res},
@@ -59,7 +59,7 @@ struct index : cuvs::neighbors::index {
         std::optional<raft::device_matrix_view<float, int64_t, row_major>> distances_view =
           std::nullopt,
         cuvs::distance::DistanceType metric = cuvs::distance::DistanceType::L2Expanded,
-        knn_build_algo build_algo           = NN_DESCENT,
+        knn_build_algo build_algo           = IVF_PQ,
         size_t n_clusters                   = 4)
     : cuvs::neighbors::index(),
       res{res},

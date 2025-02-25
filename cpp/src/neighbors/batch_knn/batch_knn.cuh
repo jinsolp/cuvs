@@ -424,8 +424,12 @@ std::unique_ptr<batch_knn_builder<T, IdxT>> get_knn_builder(const raft::resource
     // auto ivf_pq_search_params = static_cast<ivf_pq::search_params&>(search_params);
     auto ivf_pq_params = std::get<graph_build_params::ivf_pq_params>(params.graph_build_params);
 
-    return std::make_unique<batch_knn_builder_ivfpq<T, IdxT>>(
-      handle, index.n_clusters, ivf_pq_params);
+    return std::make_unique<batch_knn_builder_ivfpq<T, IdxT>>(handle,
+                                                              index.n_clusters,
+                                                              ivf_pq_params,
+                                                              min_cluster_size,
+                                                              max_cluster_size,
+                                                              static_cast<size_t>(index.k));
   } else {
     RAFT_FAIL("Batch KNN build algos only supporting NN Descent and IVF PQ");
   }
@@ -568,6 +572,8 @@ void build(const raft::resources& handle,
                            inverted_indices.view());
   }
 
+  // raft::print_host_vector("neighbors", global_neighbors.data_handle(), index.k, std::cout);
+  // raft::print_host_vector("distances", global_distances.data_handle(), index.k, std::cout);
   raft::copy(index.graph().data_handle(),
              global_neighbors.data_handle(),
              num_rows * index.k,
