@@ -265,9 +265,11 @@ struct batch_knn_builder_ivfpq : public batch_knn_builder<T, IdxT> {
       min_cluster_size{min_cluster_size},
       max_cluster_size{max_cluster_size}
   {
-    refinement_rate = 3.0;
-    // index_params.add_data_on_build = false;
-    index_params.kmeans_trainset_fraction     = 1.0;
+    refinement_rate                = 3.0;
+    index_params.add_data_on_build = false;
+    // take care of this part
+    // index_params.kmeans_trainset_fraction     = 1.0;  // what percentage of data do you want to
+    // use
     index_params.kmeans_n_iters               = 50;
     index_params.n_lists                      = 20;
     index_params.max_train_points_per_pq_code = 512;
@@ -281,67 +283,39 @@ struct batch_knn_builder_ivfpq : public batch_knn_builder<T, IdxT> {
               << "  n clusters " << n_clusters << " n lists " << index_params.n_lists << std::endl;
     size_t num_rows = static_cast<size_t>(dataset.extent(0));
     size_t num_cols = static_cast<size_t>(dataset.extent(1));
-    // size_t num_subsamples =
-    // std::min(static_cast<size_t>(num_rows / n_clusters), static_cast<size_t>(num_rows * 0.1));
-    // size_t num_subsamples = static_cast<size_t>(num_rows * 0.99);
-    // std::cout << "number of subsamples " << num_subsamples << std::endl;
+
+    size_t num_subsamples =
+      std::min(static_cast<size_t>(num_rows / n_clusters), static_cast<size_t>(num_rows * 0.1));
+    index_params.kmeans_trainset_fraction = (float)num_subsamples / (float)num_rows;
+
+    std::cout << "number of subsamples " << num_subsamples
+              << "fraction: " << index_params.kmeans_trainset_fraction << std::endl;
     // auto d_dataset_subsample =
     //   raft::make_device_matrix<T, int64_t, row_major>(res, num_subsamples, num_cols);
     // raft::matrix::sample_rows<T, int64_t>(
     //   res, raft::random::RngState{0}, dataset, d_dataset_subsample.view());
 
-    auto d_dataset_subsample =
-      raft::make_device_matrix<T, int64_t, row_major>(res, num_rows, num_cols);
-    raft::copy(d_dataset_subsample.data_handle(),
-               dataset.data_handle(),
-               num_rows * num_cols,
-               raft::resource::get_cuda_stream(res));
-    // index_params.n_lists = 10;  // TODO: re-do this
+    // auto d_dataset_subsample =
+    //   raft::make_device_matrix<T, int64_t, row_major>(res, num_rows, num_cols);
+    // raft::copy(d_dataset_subsample.data_handle(),
+    //            dataset.data_handle(),
+    //            num_rows * num_cols,
+    //            raft::resource::get_cuda_stream(res));
 
-    // auto tmp_index = cuvs::neighbors::ivf_pq::build(
-    //   res, index_params, raft::make_const_mdspan(d_dataset_subsample.view()));
-    // std::cout << "num rows: " << num_rows << std::endl;
-    //   size_t tmp_k = 500;
-    //   auto tmp_neighbors_candidate = raft::make_device_matrix<IdxT, int64_t, row_major>(res,
-    //   num_rows, tmp_k); auto tmp_distances_candidate = raft::make_device_matrix<T, int64_t,
-    //   row_major>(res, num_rows, tmp_k);
-    // cuvs::neighbors::ivf_pq::search(res,
-    //     search_params,
-    //     tmp_index,
-    //     raft::make_const_mdspan(d_dataset_subsample.view()),
-    //     tmp_neighbors_candidate.view(),
-    //     tmp_distances_candidate.view());
+    // auto index_empty = ivf_pq::build(res, index_params, dataset);
 
-    //     raft::print_device_vector("full dataset search neigh 0",
-    //     tmp_neighbors_candidate.data_handle(), 20, std::cout); raft::print_device_vector("full
-    //     dataset search neigh 1", tmp_neighbors_candidate.data_handle() + tmp_k, 20, std::cout);
-    //     raft::print_device_vector("full dataset search dists 0",
-    //     tmp_distances_candidate.data_handle(), 20, std::cout); raft::print_device_vector("full
-    //     dataset search dists 1", tmp_distances_candidate.data_handle() + tmp_k, 20, std::cout);
+    index.emplace(ivf_pq::build(res, index_params, dataset));
+    std::cout << "index codebook size: this should be empty" << index.value().size() << std::endl;
 
-    //     auto tmp_resulting_indices_d = raft::make_device_matrix<IdxT, int64_t>(res, num_rows, k);
-    //     auto tmp_resulting_distances_d = raft::make_device_matrix<T, int64_t>(res, num_rows, k);
+    // extending with the full dataset
+    for (size_t i = 0; i < n_clusters; i++) {}
+    cuvs::neighbors::ivf_pq::extend(res, dataset, std::nullopt, &index.value());
 
-    //     // auto data_view =
-    //     //   raft::make_device_matrix_view(data_d.value().data_handle(), num_data_in_cluster,
-    //     num_cols); refine(res,
-    //            raft::make_const_mdspan(d_dataset_subsample.view()),
-    //            raft::make_const_mdspan(d_dataset_subsample.view()),
-    //            raft::make_const_mdspan(tmp_neighbors_candidate.view()),
-    //            tmp_resulting_indices_d.view(),
-    //            tmp_resulting_distances_d.view());
-    //   raft::print_device_vector("after refining on full dataset search 0",
-    //   tmp_resulting_indices_d.data_handle(), k, std::cout); raft::print_device_vector("after
-    //   refining on full dataset search 1", tmp_resulting_indices_d.data_handle() + k, k,
-    //   std::cout); raft::print_device_vector("after refining on full dataset search  distances 0",
-    //   tmp_resulting_distances_d.data_handle(), k, std::cout); raft::print_device_vector("after
-    //   refining on full dataset search  distances 1", tmp_resulting_distances_d.data_handle() + k,
-    //   k, std::cout);
+    // index.emplace(cuvs::neighbors::ivf_pq::build(
+    //   res, index_params, raft::make_const_mdspan(d_dataset_subsample.view())));
 
-    index.emplace(cuvs::neighbors::ivf_pq::build(
-      res, index_params, raft::make_const_mdspan(d_dataset_subsample.view())));
-
-    std::cout << "index codebook size " << index.value().pq_book_size() << std::endl;
+    std::cout << "index codebook size after extend with full data " << index.value().size()
+              << std::endl;
     size_t top_k     = k + 1;
     size_t gpu_top_k = k * refinement_rate;
     // size_t gpu_top_k = num_rows - 1;
