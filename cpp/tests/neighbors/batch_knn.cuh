@@ -81,6 +81,9 @@ class BatchKNNTest : public ::testing::TestWithParam<AnnNNDescentBatchInputs> {
     {
       rmm::device_uvector<DistanceT> distances_naive_dev(queries_size, stream_);
       rmm::device_uvector<IdxT> indices_naive_dev(queries_size, stream_);
+
+      raft::print_device_vector("data in test 0", database.data(), 10, std::cout);
+      raft::print_device_vector("data in test 1", database.data() + ps.dim, 10, std::cout);
       naive_knn<DistanceT, DataT, IdxT>(handle_,
                                         distances_naive_dev.data(),
                                         indices_naive_dev.data(),
@@ -94,6 +97,17 @@ class BatchKNNTest : public ::testing::TestWithParam<AnnNNDescentBatchInputs> {
       raft::update_host(indices_naive.data(), indices_naive_dev.data(), queries_size, stream_);
       raft::update_host(distances_naive.data(), distances_naive_dev.data(), queries_size, stream_);
       raft::resource::sync_stream(handle_);
+
+      raft::print_host_vector(
+        "naive knn indices 0", indices_naive.data(), ps.graph_degree, std::cout);
+      raft::print_host_vector(
+        "naive knn indices 1", indices_naive.data() + ps.graph_degree, ps.graph_degree, std::cout);
+      raft::print_host_vector(
+        "naive knn distances 0", distances_naive.data(), ps.graph_degree, std::cout);
+      raft::print_host_vector("naive knn distances 1",
+                              distances_naive.data() + ps.graph_degree,
+                              ps.graph_degree,
+                              std::cout);
     }
 
     {
@@ -187,7 +201,7 @@ class BatchKNNTest : public ::testing::TestWithParam<AnnNNDescentBatchInputs> {
 const std::vector<AnnNNDescentBatchInputs> inputsBatch =
   raft::util::itertools::product<AnnNNDescentBatchInputs>(
     {std::make_pair(0.9, 3lu)},  // min_recall, n_clusters
-    {10000},                     // n_rows
+    {100000},                    // n_rows
     {192},                       // dim
     {32},                        // graph_degree
     {cuvs::distance::DistanceType::L2Expanded},
