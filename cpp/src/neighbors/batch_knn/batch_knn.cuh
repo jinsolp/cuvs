@@ -461,7 +461,7 @@ void single_gpu_batch_build(const raft::resources& handle,
     raft::make_device_matrix<float, int64_t, row_major>(handle, max_cluster_size, index.k);
 
   // prepare build is for large stuff
-  knn_builder.prepare_build(dataset);
+  knn_builder.prepare_build(dataset, cluster_sizes);
 
   for (size_t cluster_id = 0; cluster_id < index.n_clusters; cluster_id++) {
     size_t num_data_in_cluster = cluster_sizes(cluster_id);

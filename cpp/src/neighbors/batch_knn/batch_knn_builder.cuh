@@ -21,8 +21,10 @@
 #include "cuvs/neighbors/nn_descent.hpp"
 #include <cstddef>
 #include <cuda.h>
+#include <raft/core/device_mdarray.hpp>
 #include <raft/core/device_mdspan.hpp>
 #include <raft/core/host_mdarray.hpp>
+#include <raft/core/host_mdspan.hpp>
 #include <raft/core/mdspan_types.hpp>
 #include <raft/core/resource/cuda_stream.hpp>
 #include <raft/core/resources.hpp>
@@ -228,7 +230,8 @@ template <typename T, typename IdxT = int64_t>
 struct batch_knn_builder {
   batch_knn_builder() {}
 
-  virtual void prepare_build(raft::host_matrix_view<const T, int64_t, raft::row_major> dataset)
+  virtual void prepare_build(raft::host_matrix_view<const T, int64_t, raft::row_major> dataset,
+                             raft::host_vector_view<IdxT, IdxT, row_major> cluster_sizes)
   {
     // preparing build (index of making gnnd etc)
   }
@@ -265,8 +268,8 @@ struct batch_knn_builder_ivfpq : public batch_knn_builder<T, IdxT> {
       min_cluster_size{min_cluster_size},
       max_cluster_size{max_cluster_size}
   {
-    refinement_rate                = 3.0;
-    index_params.add_data_on_build = false;
+    refinement_rate = 3.0;
+    // index_params.add_data_on_build = false;
     // take care of this part
     // index_params.kmeans_trainset_fraction     = 1.0;  // what percentage of data do you want to
     // use
@@ -275,8 +278,9 @@ struct batch_knn_builder_ivfpq : public batch_knn_builder<T, IdxT> {
     index_params.max_train_points_per_pq_code = 512;
   }
 
-  void prepare_build(raft::host_matrix_view<const T, int64_t, row_major> dataset) override
-  {
+  void prepare_build(raft::host_matrix_view<const T, int64_t, row_major> dataset,
+                     raft::host_vector_view<IdxT, IdxT, row_major> cluster_sizes) override
+  {  // TODO: we might not need cluster sizes
     // build ivf-pq index on a random subset for efficient GPU memory usage
 
     std::cout << "index params add dat aon build " << index_params.add_data_on_build
@@ -286,36 +290,35 @@ struct batch_knn_builder_ivfpq : public batch_knn_builder<T, IdxT> {
 
     size_t num_subsamples =
       std::min(static_cast<size_t>(num_rows / n_clusters), static_cast<size_t>(num_rows * 0.1));
-    index_params.kmeans_trainset_fraction = (float)num_subsamples / (float)num_rows;
+    index_params.kmeans_trainset_fraction =
+      (float)num_subsamples / (float)num_rows;  // TODO: change this part
 
     std::cout << "number of subsamples " << num_subsamples
               << "fraction: " << index_params.kmeans_trainset_fraction << std::endl;
-    // auto d_dataset_subsample =
-    //   raft::make_device_matrix<T, int64_t, row_major>(res, num_subsamples, num_cols);
-    // raft::matrix::sample_rows<T, int64_t>(
-    //   res, raft::random::RngState{0}, dataset, d_dataset_subsample.view());
 
-    // auto d_dataset_subsample =
-    //   raft::make_device_matrix<T, int64_t, row_major>(res, num_rows, num_cols);
-    // raft::copy(d_dataset_subsample.data_handle(),
-    //            dataset.data_handle(),
-    //            num_rows * num_cols,
-    //            raft::resource::get_cuda_stream(res));
-
-    // auto index_empty = ivf_pq::build(res, index_params, dataset);
-
+    // extend automatically batch-builds
     index.emplace(ivf_pq::build(res, index_params, dataset));
-    std::cout << "index codebook size: this should be empty" << index.value().size() << std::endl;
 
     // extending with the full dataset
-    for (size_t i = 0; i < n_clusters; i++) {}
-    cuvs::neighbors::ivf_pq::extend(res, dataset, std::nullopt, &index.value());
+    // for (size_t i = 0; i < n_clusters; i++) {
+    //   size_t offset = max_cluster_size * i;
+    //   size_t curr_cluster_size = std::min(max_cluster_size, num_rows*2 - offset);
+    //   std::cout << "curr cluster size: " << curr_cluster_size  << " offset: " << offset <<
+    //   std::endl; auto sub_dataset = raft::make_host_matrix_view(dataset.data_handle() + offset *
+    //   num_cols, curr_cluster_size, num_cols); std::vector<IdxT> vec(curr_cluster_size);
+    //   std::iota(vec.begin(), vec.end(), offset);
+
+    //   auto new_indices = raft::make_host_vector_view(vec.data(), curr_cluster_size);
+    //   raft::print_host_vector("new indices", new_indices.data_handle(), 10, std::cout);
+
+    //   cuvs::neighbors::ivf_pq::extend(res, sub_dataset, new_indices, &index.value());
+    //   std::cout << "[ITER " << i+1 << "] index size: " << index.value().size() << std::endl;
+    // }
+    // cuvs::neighbors::ivf_pq::extend(res, dataset, std::nullopt, &index.value());
 
     // index.emplace(cuvs::neighbors::ivf_pq::build(
     //   res, index_params, raft::make_const_mdspan(d_dataset_subsample.view())));
 
-    std::cout << "index codebook size after extend with full data " << index.value().size()
-              << std::endl;
     size_t top_k     = k + 1;
     size_t gpu_top_k = k * refinement_rate;
     // size_t gpu_top_k = num_rows - 1;
@@ -397,6 +400,41 @@ struct batch_knn_builder_ivfpq : public batch_knn_builder<T, IdxT> {
       batch_indices_d.data_handle(), num_data_in_cluster, k);
     auto resulting_distances_d = raft::make_device_matrix_view<T, int64_t>(
       batch_distances_d.data_handle(), num_data_in_cluster, k);
+
+    // have to remap indices for neighbors_candidate_view because search returns original indices
+    auto tmp_neighbors_candidate_host =
+      raft::make_host_matrix<IdxT, int64_t, row_major>(num_data_in_cluster, gpu_top_k);
+    raft::copy(tmp_neighbors_candidate_host.data_handle(),
+               neighbors_candidate_d.value().data_handle(),
+               num_data_in_cluster * gpu_top_k,
+               raft::resource::get_cuda_stream(res));
+
+    auto tmp_neighbors_candidate_host_local =
+      raft::make_host_matrix<IdxT, int64_t, row_major>(num_data_in_cluster, gpu_top_k);
+
+    // remap indices to local index
+#pragma omp parallel for
+    for (size_t i = 0; i < num_data_in_cluster; i++) {
+      for (size_t j = 0; j < gpu_top_k; j++) {
+        size_t global_idx = tmp_neighbors_candidate_host(i, j);
+        for (size_t p = 0; p < num_data_in_cluster; p++) {
+          if ((size_t)inverted_indices[p] == global_idx) {
+            tmp_neighbors_candidate_host_local(i, j) = p;
+          }
+        }
+        // batch_indices_h(i, j) = inverted_indices[local_idx];
+      }
+    }
+    // copy back to device
+    raft::copy(neighbors_candidate_view.data_handle(),
+               tmp_neighbors_candidate_host_local.data_handle(),
+               num_data_in_cluster * gpu_top_k,
+               raft::resource::get_cuda_stream(res));
+
+    raft::print_device_vector("neighbors candidate VIEW!!! after remapping to local indices",
+                              neighbors_candidate_view.data_handle(),
+                              20,
+                              std::cout);
 
     auto data_view =
       raft::make_device_matrix_view(data_d.value().data_handle(), num_data_in_cluster, num_cols);
@@ -498,7 +536,8 @@ struct batch_knn_builder_nn_descent : public batch_knn_builder<T, IdxT> {
     // make int graph
   }
 
-  void prepare_build(raft::host_matrix_view<const T, int64_t, row_major> dataset) override
+  void prepare_build(raft::host_matrix_view<const T, int64_t, row_major> dataset,
+                     raft::host_vector_view<IdxT, IdxT, row_major> cluster_sizes) override
   {
     size_t intermediate_degree = index_params.intermediate_graph_degree;
     size_t graph_degree        = k;
