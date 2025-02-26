@@ -489,7 +489,8 @@ struct batch_knn_builder_nn_descent : public batch_knn_builder<T, IdxT> {
                                batch_knn::graph_build_params::nn_descent_params& index_params,
                                size_t min_cluster_size,
                                size_t max_cluster_size,
-                               size_t k)
+                               size_t k,
+                               bool return_distances)
     : batch_knn_builder<T, IdxT>(),
       res{res},
       k{k},
@@ -497,10 +498,14 @@ struct batch_knn_builder_nn_descent : public batch_knn_builder<T, IdxT> {
       min_cluster_size{min_cluster_size},
       max_cluster_size{max_cluster_size}
   {
-    index_params = index_params;
+    index_params                  = index_params;
+    index_params.graph_degree     = k;
+    index_params.return_distances = return_distances;
+    index_params.n_clusters =
+      n_clusters;  // this actually doesn't affect the build anymore,but just here for consistency
 
-    std::cout << "max slucter size: " << max_cluster_size << " min: " << min_cluster_size
-              << " k : " << k << std::endl;
+    // std::cout << "max slucter size: " << max_cluster_size << " min: " << min_cluster_size
+    //           << " k : " << k << std::endl;
     // make int graph
   }
 

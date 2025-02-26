@@ -26,27 +26,25 @@
 
 namespace cuvs::neighbors::batch_knn {
 
-enum knn_build_algo { NN_DESCENT, IVF_PQ };
+// enum knn_build_algo { NN_DESCENT, IVF_PQ };
 
 template <typename IdxT, typename DistT = float>
 struct index : cuvs::neighbors::index {
  public:
-  index(raft::resources const& res,
-        int64_t n_rows,
-        int64_t k,
-        bool return_distances               = false,
-        cuvs::distance::DistanceType metric = cuvs::distance::DistanceType::L2Expanded,
-        knn_build_algo build_algo           = IVF_PQ,
-        size_t n_clusters                   = 6)
+  index(raft::resources const& res, int64_t n_rows, int64_t k, bool return_distances = false
+        // cuvs::distance::DistanceType metric = cuvs::distance::DistanceType::L2Expanded
+        // knn_build_algo build_algo           = IVF_PQ,
+        // size_t n_clusters                   = 10
+        )
     : cuvs::neighbors::index(),
       res{res},
       k{k},
-      metric{metric},
+      // metric{metric},
       graph_{raft::make_host_matrix<IdxT, int64_t, raft::row_major>(n_rows, k)},
       graph_view_{graph_.view()},
-      return_distances{return_distances},
-      build_algo{build_algo},
-      n_clusters{n_clusters}
+      return_distances{return_distances}
+  // build_algo{build_algo},
+  // n_clusters{n_clusters}
   {
     if (return_distances) {
       distances_      = raft::make_device_matrix<DistT, int64_t>(res, n_rows, k);
@@ -54,23 +52,24 @@ struct index : cuvs::neighbors::index {
     }
   }
 
-  index(raft::resources const& res,
-        raft::host_matrix_view<IdxT, int64_t, raft::row_major> graph_view,
-        std::optional<raft::device_matrix_view<float, int64_t, row_major>> distances_view =
-          std::nullopt,
-        cuvs::distance::DistanceType metric = cuvs::distance::DistanceType::L2Expanded,
-        knn_build_algo build_algo           = IVF_PQ,
-        size_t n_clusters                   = 6)
+  index(
+    raft::resources const& res,
+    raft::host_matrix_view<IdxT, int64_t, raft::row_major> graph_view,
+    std::optional<raft::device_matrix_view<float, int64_t, row_major>> distances_view = std::nullopt
+    // cuvs::distance::DistanceType metric = cuvs::distance::DistanceType::L2Expanded
+    // knn_build_algo build_algo           = IVF_PQ,
+    // size_t n_clusters                   = 10
+    )
     : cuvs::neighbors::index(),
       res{res},
       k{graph_view.extent(1)},
-      metric{metric},
+      // metric{metric},
       graph_{raft::make_host_matrix<IdxT, int64_t, raft::row_major>(0, 0)},
       graph_view_{graph_view},
       distances_view_{distances_view},
-      return_distances{distances_view.has_value()},
-      build_algo{build_algo},
-      n_clusters{n_clusters}
+      return_distances{distances_view.has_value()}
+  // build_algo{build_algo},
+  // n_clusters{n_clusters}
   {
   }
 
@@ -97,10 +96,10 @@ struct index : cuvs::neighbors::index {
 
   raft::resources const& res;
   int64_t k;
-  cuvs::distance::DistanceType metric;
+  // cuvs::distance::DistanceType metric;
   bool return_distances;
-  knn_build_algo build_algo;
-  size_t n_clusters;
+  // knn_build_algo build_algo;
+  // size_t n_clusters;
 
  private:
   // raft::resources const& res_;
@@ -175,7 +174,12 @@ struct index_params : cuvs::neighbors::index_params {
   std::variant<graph_build_params::nn_descent_params, graph_build_params::ivf_pq_params>
     graph_build_params;
 
-  bool attach_dataset_on_build = true;
+  // knn_build_algo build_algo = NN_DESCENT;
+
+  size_t num_nearest_clusters = 2;
+  size_t n_clusters           = 4;
+
+  cuvs::distance::DistanceType metric = cuvs::distance::DistanceType::L2Expanded;
 };
 
 auto build(const raft::resources& handle,

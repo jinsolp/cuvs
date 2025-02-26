@@ -17,6 +17,7 @@
 
 #include "../test_utils.cuh"
 #include "ann_utils.cuh"
+#include <raft/core/mdspan.hpp>
 #include <raft/core/resource/nccl_clique.hpp>
 
 #include <cuvs/distance/distance.hpp>
@@ -41,30 +42,33 @@
 
 namespace cuvs::neighbors::batch_knn {
 
-struct AnnNNDescentBatchInputs {
-  std::pair<double, size_t> recall_cluster;
+enum knn_build_algo { NN_DESCENT, IVF_PQ };
+
+struct BatchKNNInputs {
+  knn_build_algo build_algo;
+  std::tuple<double, size_t, size_t> recall_cluster_nearestcluster;
   int n_rows;
   int dim;
-  int graph_degree;
+  int k;
   cuvs::distance::DistanceType metric;
-  bool host_dataset;
 };
 
-inline ::std::ostream& operator<<(::std::ostream& os, const AnnNNDescentBatchInputs& p)
+inline ::std::ostream& operator<<(::std::ostream& os, const BatchKNNInputs& p)
 {
-  os << "dataset shape=" << p.n_rows << "x" << p.dim << ", graph_degree=" << p.graph_degree
-     << ", metric=" << static_cast<int>(p.metric) << (p.host_dataset ? ", host" : ", device")
-     << ", clusters=" << p.recall_cluster.second << std::endl;
+  os << "dataset shape=" << p.n_rows << "x" << p.dim << ", graph_degree=" << p.k
+     << ", metric=" << static_cast<int>(p.metric)
+     << ", clusters=" << std::get<1>(p.recall_cluster_nearestcluster)
+     << ", num nearest clusters=" << std::get<2>(p.recall_cluster_nearestcluster) << std::endl;
   return os;
 }
 
 template <typename DistanceT, typename DataT, typename IdxT = int64_t>
-class BatchKNNTest : public ::testing::TestWithParam<AnnNNDescentBatchInputs> {
+class BatchKNNTest : public ::testing::TestWithParam<BatchKNNInputs> {
  public:
   BatchKNNTest()
     : stream_(raft::resource::get_cuda_stream(handle_)),
       clique_(raft::resource::get_nccl_clique(handle_)),
-      ps(::testing::TestWithParam<AnnNNDescentBatchInputs>::GetParam()),
+      ps(::testing::TestWithParam<BatchKNNInputs>::GetParam()),
       database(0, stream_)
   {
   }
@@ -72,9 +76,9 @@ class BatchKNNTest : public ::testing::TestWithParam<AnnNNDescentBatchInputs> {
  protected:
   void run()
   {
-    size_t queries_size = ps.n_rows * ps.graph_degree;
-    std::vector<IdxT> indices_NNDescent(queries_size);
-    std::vector<DistanceT> distances_NNDescent(queries_size);
+    size_t queries_size = ps.n_rows * ps.k;
+    std::vector<IdxT> indices_batch(queries_size);
+    std::vector<DistanceT> distances_batch(queries_size);
     std::vector<IdxT> indices_naive(queries_size);
     std::vector<DistanceT> distances_naive(queries_size);
 
@@ -90,66 +94,49 @@ class BatchKNNTest : public ::testing::TestWithParam<AnnNNDescentBatchInputs> {
                                         ps.n_rows,
                                         ps.n_rows,
                                         ps.dim,
-                                        ps.graph_degree,
+                                        ps.k,
                                         ps.metric);
       raft::update_host(indices_naive.data(), indices_naive_dev.data(), queries_size, stream_);
       raft::update_host(distances_naive.data(), distances_naive_dev.data(), queries_size, stream_);
       raft::resource::sync_stream(handle_);
-
-      raft::print_host_vector(
-        "naive knn indices 0", indices_naive.data(), ps.graph_degree, std::cout);
-      raft::print_host_vector(
-        "naive knn indices 1", indices_naive.data() + ps.graph_degree, ps.graph_degree, std::cout);
-      raft::print_host_vector(
-        "naive knn distances 0", distances_naive.data(), ps.graph_degree, std::cout);
-      raft::print_host_vector("naive knn distances 1",
-                              distances_naive.data() + ps.graph_degree,
-                              ps.graph_degree,
-                              std::cout);
     }
 
     {
       {
-        //  nn_descent::index_params index_params;
-        //  index_params.metric                    = ps.metric;
-        //  index_params.graph_degree              = ps.graph_degree;
-        //  index_params.intermediate_graph_degree = 2 * ps.graph_degree;
-        //  index_params.max_iterations            = 100;
-        //  index_params.return_distances          = true;
-        //  index_params.n_clusters                = ps.recall_cluster.second;
-
-        // ivf_pq::index_params index_params;
-        // ivf_pq::search_params search_params;
         index_params params;  // NEED to change build_algo to be part of params
-        params.graph_build_params = graph_build_params::ivf_pq_params{};
-        // params.graph_build_params = graph_build_params::nn_descent_params{};
-        // auto ivf_pq_params =
-        // std::get<graph_build_params::ivf_pq_params>(params.graph_build_params); std::cout <<
-        // "here " << ivf_pq_params.build_params.n_lists << std::endl;
-        //  auto database_view = raft::make_device_matrix_view<const DataT, int64_t>(
-        //    (const DataT*)database.data(), ps.n_rows, ps.dim);
+        if (ps.build_algo == NN_DESCENT) {
+          auto nn_descent_params           = graph_build_params::nn_descent_params{};
+          nn_descent_params.max_iterations = 100;
+          params.graph_build_params        = nn_descent_params;
+        } else if (ps.build_algo == IVF_PQ) {
+          params.graph_build_params = graph_build_params::ivf_pq_params{};
+        }
+        params.n_clusters           = std::get<1>(ps.recall_cluster_nearestcluster);
+        params.num_nearest_clusters = std::get<2>(ps.recall_cluster_nearestcluster);
 
         {
           // making dataset
           auto database_host = raft::make_host_matrix<DataT, int64_t>(ps.n_rows, ps.dim);
           raft::copy(database_host.data_handle(), database.data(), database.size(), stream_);
 
-          auto database_host_view = raft::make_host_matrix_view<const DataT, int64_t>(
-            (const DataT*)database_host.data_handle(), ps.n_rows, ps.dim);
+          // auto database_host_view = raft::make_host_matrix_view<const DataT, int64_t>(
+          //   (const DataT*)database_host.data_handle(), ps.n_rows, ps.dim);
 
           auto start = raft::curTimeMillis();
-          auto index =
-            build(handle_, database_host_view, static_cast<int64_t>(ps.graph_degree), params);
-          auto end = raft::curTimeMillis();
+          auto index = batch_knn::build(handle_,
+                                        raft::make_const_mdspan(database_host.view()),
+                                        static_cast<int64_t>(ps.k),
+                                        params);
+          auto end   = raft::curTimeMillis();
           std::cout << "time to run batch build: " << end - start << std::endl;
           // raft::print_host_vector("in test here  indices ", index.graph().data_handle(),
           // ps.graph_degree, std::cout);
           //  batch_knn::build(
           //   handle_, database_host_view, (size_t)ps.graph_degree, params);
           // auto index = build(handle)
-          raft::copy(indices_NNDescent.data(), index.graph().data_handle(), queries_size, stream_);
+          raft::copy(indices_batch.data(), index.graph().data_handle(), queries_size, stream_);
           if (index.distances().has_value()) {
-            raft::copy(distances_NNDescent.data(),
+            raft::copy(distances_batch.data(),
                        index.distances().value().data_handle(),
                        queries_size,
                        stream_);
@@ -157,7 +144,7 @@ class BatchKNNTest : public ::testing::TestWithParam<AnnNNDescentBatchInputs> {
         }
         raft::resource::sync_stream(handle_);
       }
-      double min_recall = ps.recall_cluster.first;
+      double min_recall = std::get<0>(ps.recall_cluster_nearestcluster);
       // EXPECT_TRUE(eval_neighbours(indices_naive,
       //                             indices_NNDescent,
       //                             distances_naive,
@@ -168,8 +155,8 @@ class BatchKNNTest : public ::testing::TestWithParam<AnnNNDescentBatchInputs> {
       //                             min_recall,
       //                             true));
       std::cout << "eval recall\n";
-      EXPECT_TRUE(eval_recall(
-        indices_naive, indices_NNDescent, ps.n_rows, ps.graph_degree, 0.01, min_recall, true));
+      EXPECT_TRUE(
+        eval_recall(indices_naive, indices_batch, ps.n_rows, ps.k, 0.01, min_recall, true));
     }
   }
 
@@ -196,26 +183,18 @@ class BatchKNNTest : public ::testing::TestWithParam<AnnNNDescentBatchInputs> {
   raft::resources handle_;
   rmm::cuda_stream_view stream_;
   raft::comms::nccl_clique clique_;
-  AnnNNDescentBatchInputs ps;
+  BatchKNNInputs ps;
   rmm::device_uvector<DataT> database;
 };
 
-const std::vector<AnnNNDescentBatchInputs> inputsBatch =
-  raft::util::itertools::product<AnnNNDescentBatchInputs>(
-    {std::make_pair(0.9, 3lu)},  // min_recall, n_clusters
-    {10000},                     // n_rows
-    {192},                       // dim
-    {32},                        // graph_degree
-    {cuvs::distance::DistanceType::L2Expanded},
-    {true});
-
-//  const std::vector<AnnNNDescentBatchInputs> inputsBatch =
-//    raft::util::itertools::product<AnnNNDescentBatchInputs>(
-//      {std::make_pair(0.9, 3lu), std::make_pair(0.9, 2lu)},  // min_recall, n_clusters
-//      {4000, 5000},                                          // n_rows
-//      {192, 512},                                            // dim
-//      {32, 64},                                              // graph_degree
-//      {cuvs::distance::DistanceType::L2Expanded},
-//      {false, true});
+const std::vector<BatchKNNInputs> inputsBatch = raft::util::itertools::product<BatchKNNInputs>(
+  {NN_DESCENT, IVF_PQ},
+  {std::make_tuple(0.85, 4lu, 2lu),
+   std::make_tuple(0.95, 10lu, 5lu),
+   std::make_tuple(0.95, 11lu, 7lu)},  // min_recall, n_clusters, num_nearest_cluster
+  {10000},                             // n_rows
+  {192, 256},                          // dim
+  {32, 64},                            // graph_degree
+  {cuvs::distance::DistanceType::L2Expanded});
 
 }  // namespace cuvs::neighbors::batch_knn
