@@ -101,10 +101,8 @@ void get_global_nearest_clusters(
   // maybe do this part multi-gpu too?
 
   for (size_t i = 0; i < num_batches; i++) {
-    //   size_t batch_size_ = batch_size;
     size_t row_offset              = n_rows_per_batch * i;
     size_t n_rows_of_current_batch = std::min(n_rows_per_batch, num_rows - row_offset);
-    //   if (i == num_batches - 1) { batch_size_ = num_rows - batch_size * i; }
     raft::copy(dataset_batch_d.data_handle(),
                dataset.data_handle() + row_offset * num_cols,
                n_rows_of_current_batch * num_cols,
@@ -113,6 +111,7 @@ void get_global_nearest_clusters(
     std::optional<raft::device_vector_view<const T, int64_t>> norms_view;
     cuvs::neighbors::brute_force::index<T> brute_force_index(
       res, centroids_view, norms_view, metric);
+
     // n_clusters is usually not large, so okay to do this brute-force
     cuvs::neighbors::brute_force::search(res,
                                          brute_force_index,
@@ -237,7 +236,7 @@ void single_gpu_batch_build(const raft::resources& handle,
     raft::make_device_matrix<float, int64_t, row_major>(handle, max_cluster_size, index.k);
 
   // prepare build is for large stuff
-  knn_builder.prepare_build(dataset, cluster_sizes);
+  knn_builder.prepare_build(dataset);
   raft::print_host_vector(
     "cluster sizes", cluster_sizes.data_handle(), params.n_clusters, std::cout);
 
@@ -393,15 +392,5 @@ batch_knn::index<IdxT, T> build(const raft::resources& handle,
   build(handle, dataset, index);
   return index;
 }
-
-// // build algo defaults to NN Descent
-// template <typename T, typename IdxT=int64_t>
-// batch_knn::index<IdxT, T> build(const raft::resources& handle)   // distance type same as data
-// type
-// {
-//     batch_knn::index<IdxT, T> index{handle, 30, 10, false};
-//     // build(handle, dataset, index, index_params, search_params);
-//     return index;
-// }
 
 }  // namespace cuvs::neighbors::batch_knn::detail

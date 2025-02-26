@@ -180,6 +180,7 @@ struct index_params : cuvs::neighbors::index_params {
   size_t n_clusters           = 4;
 
   cuvs::distance::DistanceType metric = cuvs::distance::DistanceType::L2Expanded;
+  float refinement_rate               = 2.0;
 };
 
 auto build(const raft::resources& handle,
