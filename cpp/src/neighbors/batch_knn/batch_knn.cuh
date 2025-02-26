@@ -24,6 +24,7 @@
 #include <cuvs/neighbors/refine.hpp>
 #include <raft/core/device_mdarray.hpp>
 #include <raft/core/host_mdarray.hpp>
+#include <raft/core/host_mdspan.hpp>
 #include <raft/core/managed_mdarray.hpp>
 #include <raft/core/resource/nccl_clique.hpp>
 
@@ -462,6 +463,8 @@ void single_gpu_batch_build(const raft::resources& handle,
 
   // prepare build is for large stuff
   knn_builder.prepare_build(dataset, cluster_sizes);
+  raft::print_host_vector(
+    "cluster sizes", cluster_sizes.data_handle(), index.n_clusters, std::cout);
 
   for (size_t cluster_id = 0; cluster_id < index.n_clusters; cluster_id++) {
     size_t num_data_in_cluster = cluster_sizes(cluster_id);
@@ -475,6 +478,8 @@ void single_gpu_batch_build(const raft::resources& handle,
       }
     }
 
+    auto cluster_data_view = raft::make_host_matrix_view<const T, int64_t>(
+      h_cluster_data.data_handle(), num_data_in_cluster, num_cols);
     // do the build now with the data.
     // if some requires device data, then do it
     knn_builder.build_knn(handle,
@@ -482,7 +487,7 @@ void single_gpu_batch_build(const raft::resources& handle,
                           num_data_in_cluster,
                           global_neighbors,
                           global_distances,
-                          h_cluster_data.view(),
+                          cluster_data_view,
                           inverted_indices.data_handle() + offset,
                           batch_indices_h.view(),
                           batch_indices_d.view(),
