@@ -274,7 +274,7 @@ struct batch_knn_builder_ivfpq : public batch_knn_builder<T, IdxT> {
     index_params.kmeans_trainset_fraction = 1.0;  // what percentage of data do you want to
     // use
     index_params.kmeans_n_iters               = 50;
-    index_params.n_lists                      = 20;
+    index_params.n_lists                      = 5;
     index_params.max_train_points_per_pq_code = 512;
   }
 
@@ -324,7 +324,7 @@ struct batch_knn_builder_ivfpq : public batch_knn_builder<T, IdxT> {
     size_t gpu_top_k = k * refinement_rate;
     // size_t gpu_top_k = num_rows - 1;
     gpu_top_k = std::min<IdxT>(std::max(gpu_top_k, top_k), min_cluster_size);
-    std::cout << "gput top k" << gpu_top_k << std::endl;
+    // std::cout << "gput top k" << gpu_top_k << std::endl;
     queries_d.emplace(
       raft::make_device_matrix<T, int64_t, row_major>(res, max_cluster_size, num_cols));
     data_d.emplace(
@@ -349,11 +349,11 @@ struct batch_knn_builder_ivfpq : public batch_knn_builder<T, IdxT> {
                  raft::device_matrix_view<T, int64_t, row_major> batch_distances_d) override
   {
     // build for nnd, search and refinement for ivfpq
-    std::cout << "attempting to build knn with overrode function in ivfpq builder\n";
+    // std::cout << "attempting to build knn with overrode function in ivfpq builder\n";
 
     auto index = ivf_pq::build(res, index_params, dataset);
 
-    raft::print_host_vector("inverted indices", inverted_indices, 20, std::cout);
+    // raft::print_host_vector("inverted indices", inverted_indices, 20, std::cout);
     size_t num_cols = dataset.extent(1);
     raft::copy(queries_d.value().data_handle(),
                dataset.data_handle(),
@@ -374,65 +374,30 @@ struct batch_knn_builder_ivfpq : public batch_knn_builder<T, IdxT> {
       distances_candidate_d.value().data_handle(), num_data_in_cluster, gpu_top_k);
     auto neighbors_candidate_view = raft::make_device_matrix_view<IdxT, int64_t>(
       neighbors_candidate_d.value().data_handle(), num_data_in_cluster, gpu_top_k);
-    std::cout << " k is: " << k << " topk " << top_k << " gpu top k " << gpu_top_k
-              << " num data in cluster: " << num_data_in_cluster << std::endl;
+    // std::cout << " k is: " << k << " topk " << top_k << " gpu top k " << gpu_top_k
+    //           << " num data in cluster: " << num_data_in_cluster << std::endl;
 
-    raft::print_device_vector("queries for search", queries_view.data_handle(), 10, std::cout);
-    raft::print_device_vector(
-      "queries for search", queries_view.data_handle() + dataset.extent(1), 10, std::cout);
+    // raft::print_device_vector("queries for search", queries_view.data_handle(), 10, std::cout);
+    // raft::print_device_vector(
+    //   "queries for search", queries_view.data_handle() + dataset.extent(1), 10, std::cout);
     cuvs::neighbors::ivf_pq::search(
       res, search_params, index, queries_view, neighbors_candidate_view, distances_candidate_view);
-    raft::print_device_vector(
-      "neighbors candidate view 0", neighbors_candidate_d.value().data_handle(), 10, std::cout);
-    raft::print_device_vector("neighbors candidate view 1",
-                              neighbors_candidate_d.value().data_handle() + gpu_top_k,
-                              10,
-                              std::cout);
-    raft::print_device_vector(
-      "distances candidate view 0", distances_candidate_d.value().data_handle(), 10, std::cout);
-    raft::print_device_vector("distances candidate view 1",
-                              distances_candidate_d.value().data_handle() + gpu_top_k,
-                              10,
-                              std::cout);
+    // raft::print_device_vector(
+    //   "neighbors candidate view 0", neighbors_candidate_d.value().data_handle(), 10, std::cout);
+    // raft::print_device_vector("neighbors candidate view 1",
+    //                           neighbors_candidate_d.value().data_handle() + gpu_top_k,
+    //                           10,
+    //                           std::cout);
+    // raft::print_device_vector(
+    //   "distances candidate view 0", distances_candidate_d.value().data_handle(), 10, std::cout);
+    // raft::print_device_vector("distances candidate view 1",
+    //                           distances_candidate_d.value().data_handle() + gpu_top_k,
+    //                           10,
+    //                           std::cout);
     auto resulting_indices_d = raft::make_device_matrix_view<IdxT, int64_t>(
       batch_indices_d.data_handle(), num_data_in_cluster, k);
     auto resulting_distances_d = raft::make_device_matrix_view<T, int64_t>(
       batch_distances_d.data_handle(), num_data_in_cluster, k);
-
-    // have to remap indices for neighbors_candidate_view because search returns original indices
-    //     auto tmp_neighbors_candidate_host =
-    //       raft::make_host_matrix<IdxT, int64_t, row_major>(num_data_in_cluster, gpu_top_k);
-    //     raft::copy(tmp_neighbors_candidate_host.data_handle(),
-    //                neighbors_candidate_d.value().data_handle(),
-    //                num_data_in_cluster * gpu_top_k,
-    //                raft::resource::get_cuda_stream(res));
-
-    //     auto tmp_neighbors_candidate_host_local =
-    //       raft::make_host_matrix<IdxT, int64_t, row_major>(num_data_in_cluster, gpu_top_k);
-
-    //     // remap indices to local index
-    // #pragma omp parallel for
-    //     for (size_t i = 0; i < num_data_in_cluster; i++) {
-    //       for (size_t j = 0; j < gpu_top_k; j++) {
-    //         size_t global_idx = tmp_neighbors_candidate_host(i, j);
-    //         for (size_t p = 0; p < num_data_in_cluster; p++) {
-    //           if ((size_t)inverted_indices[p] == global_idx) {
-    //             tmp_neighbors_candidate_host_local(i, j) = p;
-    //           }
-    //         }
-    //         // batch_indices_h(i, j) = inverted_indices[local_idx];
-    //       }
-    //     }
-    //     // copy back to device
-    //     raft::copy(neighbors_candidate_view.data_handle(),
-    //                tmp_neighbors_candidate_host_local.data_handle(),
-    //                num_data_in_cluster * gpu_top_k,
-    //                raft::resource::get_cuda_stream(res));
-
-    //     raft::print_device_vector("neighbors candidate VIEW!!! after remapping to local indices",
-    //                               neighbors_candidate_view.data_handle(),
-    //                               20,
-    //                               std::cout);
 
     auto data_view =
       raft::make_device_matrix_view(data_d.value().data_handle(), num_data_in_cluster, num_cols);
@@ -444,14 +409,14 @@ struct batch_knn_builder_ivfpq : public batch_knn_builder<T, IdxT> {
            resulting_distances_d);  // TODO: define metric here too
     // TODO: refine includes itself
 
-    raft::print_device_vector(
-      "AFTER REFINEMENT neighbors 0", resulting_indices_d.data_handle(), 10, std::cout);
-    raft::print_device_vector(
-      "AFTER REFINEMENT neighbors 1", resulting_indices_d.data_handle() + k, 10, std::cout);
-    raft::print_device_vector(
-      "AFTER REFINEMENT distances 0", resulting_distances_d.data_handle(), 10, std::cout);
-    raft::print_device_vector(
-      "AFTER REFINEMENT distances 1", resulting_distances_d.data_handle() + k, 10, std::cout);
+    // raft::print_device_vector(
+    //   "AFTER REFINEMENT neighbors 0", resulting_indices_d.data_handle(), 10, std::cout);
+    // raft::print_device_vector(
+    //   "AFTER REFINEMENT neighbors 1", resulting_indices_d.data_handle() + k, 10, std::cout);
+    // raft::print_device_vector(
+    //   "AFTER REFINEMENT distances 0", resulting_distances_d.data_handle(), 10, std::cout);
+    // raft::print_device_vector(
+    //   "AFTER REFINEMENT distances 1", resulting_distances_d.data_handle() + k, 10, std::cout);
 
     auto tmp_indices_h = raft::make_host_matrix<IdxT, int64_t>(num_data_in_cluster, k);
     raft::copy(tmp_indices_h.data_handle(),
@@ -468,10 +433,10 @@ struct batch_knn_builder_ivfpq : public batch_knn_builder<T, IdxT> {
       }
     }
 
-    raft::print_host_vector(
-      "remapped batch indices 0", batch_indices_h.data_handle(), 10, std::cout);
-    raft::print_host_vector(
-      "remapped batch indices 1", batch_indices_h.data_handle() + k, 10, std::cout);
+    // raft::print_host_vector(
+    //   "remapped batch indices 0", batch_indices_h.data_handle(), 10, std::cout);
+    // raft::print_host_vector(
+    //   "remapped batch indices 1", batch_indices_h.data_handle() + k, 10, std::cout);
 
     raft::copy(inverted_indices_d.value().data_handle(),
                inverted_indices,
@@ -494,6 +459,11 @@ struct batch_knn_builder_ivfpq : public batch_knn_builder<T, IdxT> {
 
     // we need to ensure the copy operations are done prior using the host data
     raft::resource::sync_stream(res);
+
+    // raft::print_host_vector("global neighbors 0", global_neighbors, k, std::cout);
+    // raft::print_host_vector("global neighbors 1", global_neighbors + k, k, std::cout);
+    // raft::print_host_vector("global distances 0", global_distances, k, std::cout);
+    // raft::print_host_vector("global distances 1", global_distances + k, k, std::cout);
   }
 
   // TODO: index doesn't need init?

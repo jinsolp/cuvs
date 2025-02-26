@@ -37,7 +37,7 @@ struct index : cuvs::neighbors::index {
         bool return_distances               = false,
         cuvs::distance::DistanceType metric = cuvs::distance::DistanceType::L2Expanded,
         knn_build_algo build_algo           = IVF_PQ,
-        size_t n_clusters                   = 4)
+        size_t n_clusters                   = 6)
     : cuvs::neighbors::index(),
       res{res},
       k{k},
@@ -60,7 +60,7 @@ struct index : cuvs::neighbors::index {
           std::nullopt,
         cuvs::distance::DistanceType metric = cuvs::distance::DistanceType::L2Expanded,
         knn_build_algo build_algo           = IVF_PQ,
-        size_t n_clusters                   = 4)
+        size_t n_clusters                   = 6)
     : cuvs::neighbors::index(),
       res{res},
       k{graph_view.extent(1)},

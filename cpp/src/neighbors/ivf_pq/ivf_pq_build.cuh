@@ -1724,7 +1724,6 @@ auto build(raft::resources const& handle,
       1,
       size_t(n_rows) / std::max<size_t>(params.kmeans_trainset_fraction * n_rows, index.n_lists()));
     size_t n_rows_train = n_rows / trainset_ratio;
-    std::cout << "nrows train in detail " << n_rows_train << std::endl;
 
     rmm::device_async_resource_ref device_memory = raft::resource::get_workspace_resource(handle);
 

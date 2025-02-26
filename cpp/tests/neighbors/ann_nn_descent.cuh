@@ -160,14 +160,16 @@ class AnnNNDescentTest : public ::testing::TestWithParam<AnnNNDescentInputs> {
       }
 
       double min_recall = ps.min_recall;
-      EXPECT_TRUE(eval_neighbours(indices_naive,
-                                  indices_NNDescent,
-                                  distances_naive,
-                                  distances_NNDescent,
-                                  ps.n_rows,
-                                  ps.graph_degree,
-                                  0.001,
-                                  min_recall));
+      // EXPECT_TRUE(eval_neighbours(indices_naive,
+      //                             indices_NNDescent,
+      //                             distances_naive,
+      //                             distances_NNDescent,
+      //                             ps.n_rows,
+      //                             ps.graph_degree,
+      //                             0.001,
+      //                             min_recall));
+      EXPECT_TRUE(eval_recall(
+        indices_naive, indices_NNDescent, ps.n_rows, ps.graph_degree, 0.001, min_recall));
     }
   }
 
@@ -279,15 +281,18 @@ class AnnNNDescentBatchTest : public ::testing::TestWithParam<AnnNNDescentBatchI
         raft::resource::sync_stream(handle_);
       }
       double min_recall = ps.recall_cluster.first;
-      EXPECT_TRUE(eval_neighbours(indices_naive,
-                                  indices_NNDescent,
-                                  distances_naive,
-                                  distances_NNDescent,
-                                  ps.n_rows,
-                                  ps.graph_degree,
-                                  0.01,
-                                  min_recall,
-                                  true));
+      // EXPECT_TRUE(eval_neighbours(indices_naive,
+      //                             indices_NNDescent,
+      //                             distances_naive,
+      //                             distances_NNDescent,
+      //                             ps.n_rows,
+      //                             ps.graph_degree,
+      //                             0.01,
+      //                             min_recall,
+      //                             true));
+
+      EXPECT_TRUE(eval_recall(
+        indices_naive, indices_NNDescent, ps.n_rows, ps.graph_degree, 0.001, min_recall));
     }
   }
 

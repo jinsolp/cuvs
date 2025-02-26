@@ -467,6 +467,8 @@ void single_gpu_batch_build(const raft::resources& handle,
     "cluster sizes", cluster_sizes.data_handle(), index.n_clusters, std::cout);
 
   for (size_t cluster_id = 0; cluster_id < index.n_clusters; cluster_id++) {
+    printf(
+      "=============== Cluster [%lu / %lu] ===============\n", cluster_id + 1, index.n_clusters);
     size_t num_data_in_cluster = cluster_sizes(cluster_id);
     size_t offset              = cluster_offsets(cluster_id);
 
@@ -481,7 +483,6 @@ void single_gpu_batch_build(const raft::resources& handle,
     auto cluster_data_view = raft::make_host_matrix_view<const T, int64_t>(
       h_cluster_data.data_handle(), num_data_in_cluster, num_cols);
     // do the build now with the data.
-    // if some requires device data, then do it
     knn_builder.build_knn(handle,
                           params,
                           num_data_in_cluster,
@@ -510,7 +511,7 @@ void build(const raft::resources& handle,
     raft::make_device_matrix<T, IdxT, raft::row_major>(handle, index.n_clusters, num_cols);
   get_centroids_on_data_subsample<T, IdxT>(handle, index.metric, dataset, centroids.view());
 
-  size_t num_nearest_clusters = 2;
+  size_t num_nearest_clusters = 3;
   auto global_nearest_cluster =
     raft::make_host_matrix<IdxT, IdxT, raft::row_major>(num_rows, num_nearest_clusters);
   get_global_nearest_clusters<T, IdxT>(handle,
@@ -521,6 +522,8 @@ void build(const raft::resources& handle,
                                        centroids.view(),
                                        index.metric);
 
+  // raft::print_host_vector("for 3354 nearest cluster", global_nearest_cluster.data_handle() +
+  // 3354*2, 2, std::cout);
   auto inverted_indices =
     raft::make_host_vector<IdxT, IdxT, raft::row_major>(num_rows * num_nearest_clusters);
   auto cluster_sizes   = raft::make_host_vector<IdxT, IdxT, raft::row_major>(index.n_clusters);
@@ -547,7 +550,6 @@ void build(const raft::resources& handle,
             std::numeric_limits<float>::max());
 
   const raft::comms::nccl_clique& clique = raft::resource::get_nccl_clique(handle);
-  std::cout << "good up to this point!\n";
   std::unique_ptr<batch_knn_builder<T, IdxT>> knn_builder =
     get_knn_builder(handle, index, params, min_cluster_size, max_cluster_size);
   // auto knn_builder = get_knn_builder();
