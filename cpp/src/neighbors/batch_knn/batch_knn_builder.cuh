@@ -329,10 +329,15 @@ struct batch_knn_builder_ivfpq : public batch_knn_builder<T, IdxT> {
   {
     refinement_rate = params.refinement_rate;  // TODO need to handle this
     // TODO: take care of this part
-    index_params.kmeans_trainset_fraction     = 1.0;  // what percentage of data do you want to
-    index_params.kmeans_n_iters               = 50;
-    index_params.n_lists                      = 5;
-    index_params.max_train_points_per_pq_code = 512;
+    // index_params.kmeans_trainset_fraction     = 1.0;  // what percentage of data do you want to
+    // index_params.kmeans_n_iters               = 50;
+    // index_params.n_lists                      = 5;
+    // index_params.max_train_points_per_pq_code = 512;
+
+    if (index_params.n_lists > static_cast<uint32_t>(max_cluster_size / 1000) ||
+        index_params.n_lists <= static_cast<uint32_t>(min_cluster_size / 10000)) {
+      index_params.n_lists = std::min(5u, static_cast<uint32_t>(max_cluster_size / 5000));
+    }
   }
 
   void prepare_build(raft::host_matrix_view<const T, int64_t, row_major> dataset) override
