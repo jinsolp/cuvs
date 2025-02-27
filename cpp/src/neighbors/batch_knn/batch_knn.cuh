@@ -232,19 +232,16 @@ void single_gpu_batch_build(const raft::resources& handle,
     raft::make_device_matrix<float, int64_t, row_major>(handle, max_cluster_size, index.k);
 
   knn_builder.prepare_build(dataset);
-  raft::print_host_vector("cluster sizes", cluster_sizes.data_handle(), n_clusters, std::cout);
+  // raft::print_host_vector("cluster sizes", cluster_sizes.data_handle(), n_clusters, std::cout);
 
   for (size_t cluster_id = 0; cluster_id < n_clusters; cluster_id++) {
-    printf("=============== [THREAD %lu] Cluster [%lu / %lu] ===============\n",
-           static_cast<size_t>(omp_get_thread_num()),
-           cluster_id + 1,
-           n_clusters);
+    // printf("=============== [THREAD %lu] Cluster [%lu / %lu] ===============\n",
+    //        static_cast<size_t>(omp_get_thread_num()),
+    //        cluster_id + 1,
+    //        n_clusters);
     size_t num_data_in_cluster = cluster_sizes(cluster_id);
     size_t offset              = cluster_offsets(cluster_id);
-    // printf("\t[THREAD %lu] num data in cluster %lu, offset %lu\n",
-    //        static_cast<size_t>(omp_get_thread_num()),
-    //        num_data_in_cluster,
-    //        offset);
+
 #pragma omp parallel for
     for (size_t i = 0; i < num_data_in_cluster; i++) {
       for (size_t j = 0; j < num_cols; j++) {
@@ -291,9 +288,6 @@ void multi_gpu_batch_build(const raft::resources& handle,
   size_t clusters_per_rank               = params.n_clusters / clique.num_ranks_;
   size_t rem = params.n_clusters - clusters_per_rank * clique.num_ranks_;
 
-  // std::unique_ptr<batch_knn_builder<T, IdxT>> new_knn_builder =
-  //   get_knn_builder(handle, index, params, min_cluster_size, max_cluster_size);
-
 #pragma omp parallel for
   for (int rank = 0; rank < clique.num_ranks_; rank++) {
     int dev_id                            = clique.device_ids_[rank];
@@ -314,15 +308,7 @@ void multi_gpu_batch_build(const raft::resources& handle,
     }
 
     size_t rank_offset = cluster_offsets(base_cluster_idx);
-    // printf(
-    //   "[THREAD %lu] num data for this rank %lu, base cluster idx %lu, num clusters for this rank
-    //   "
-    //   "%lu, rank offset: %lu\n",
-    //   static_cast<size_t>(omp_get_thread_num()),
-    //   num_data_for_this_rank,
-    //   base_cluster_idx,
-    //   num_clusters_for_this_rank,
-    //   rank_offset);
+
     // re-map offsets for each rank
     for (size_t p = 0; p < num_clusters_for_this_rank; p++) {
       cluster_offsets(base_cluster_idx + p) -= rank_offset;

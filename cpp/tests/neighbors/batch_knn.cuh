@@ -173,8 +173,8 @@ class BatchKNNTest : public ::testing::TestWithParam<BatchKNNInputs> {
 };
 
 const std::vector<BatchKNNInputs> inputsBatch = raft::util::itertools::product<BatchKNNInputs>(
-  // {NN_DESCENT, IVF_PQ},
-  {IVF_PQ},
+  {NN_DESCENT, IVF_PQ},
+  // {IVF_PQ},
   {std::make_tuple(0.85, 4lu, 2lu),
    std::make_tuple(0.95, 10lu, 5lu),
    std::make_tuple(0.95, 11lu, 7lu)},  // min_recall, n_clusters, num_nearest_cluster

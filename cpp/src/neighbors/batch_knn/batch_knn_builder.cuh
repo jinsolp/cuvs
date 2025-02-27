@@ -223,7 +223,6 @@ void merge_subgraphs(raft::resources const& res,
       // this is as far as we can get due to the shared mem usage of cub::BlockMergeSort
       RAFT_FAIL("The degree of knn is too large (%lu). It must be smaller than 1024", k);
     }
-
     raft::resource::sync_stream(res);
   }
 }
