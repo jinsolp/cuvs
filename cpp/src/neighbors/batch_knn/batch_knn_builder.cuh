@@ -176,49 +176,53 @@ void merge_subgraphs(raft::resources const& res,
 {
   size_t num_elems     = k * 2;
   size_t sharedMemSize = num_elems * (sizeof(float) + sizeof(IdxT) + sizeof(int16_t));
-  if (num_elems <= 128) {
-    merge_subgraphs_kernel<IdxT, 32, 4>
-      <<<num_data_in_cluster, 32, sharedMemSize, raft::resource::get_cuda_stream(res)>>>(
-        inverted_indices_d,
-        k,
-        num_data_in_cluster,
-        global_distances,
-        batch_distances_d,
-        global_neighbors,
-        batch_indices_d);
-  } else if (num_elems <= 512) {
-    merge_subgraphs_kernel<IdxT, 128, 4>
-      <<<num_data_in_cluster, 128, sharedMemSize, raft::resource::get_cuda_stream(res)>>>(
-        inverted_indices_d,
-        k,
-        num_data_in_cluster,
-        global_distances,
-        batch_distances_d,
-        global_neighbors,
-        batch_indices_d);
-  } else if (num_elems <= 1024) {
-    merge_subgraphs_kernel<IdxT, 128, 8>
-      <<<num_data_in_cluster, 128, sharedMemSize, raft::resource::get_cuda_stream(res)>>>(
-        inverted_indices_d,
-        k,
-        num_data_in_cluster,
-        global_distances,
-        batch_distances_d,
-        global_neighbors,
-        batch_indices_d);
-  } else if (num_elems <= 2048) {
-    merge_subgraphs_kernel<IdxT, 256, 8>
-      <<<num_data_in_cluster, 256, sharedMemSize, raft::resource::get_cuda_stream(res)>>>(
-        inverted_indices_d,
-        k,
-        num_data_in_cluster,
-        global_distances,
-        batch_distances_d,
-        global_neighbors,
-        batch_indices_d);
-  } else {
-    // this is as far as we can get due to the shared mem usage of cub::BlockMergeSort
-    RAFT_FAIL("The degree of knn is too large (%lu). It must be smaller than 1024", k);
+
+#pragma omp critical
+  {
+    if (num_elems <= 128) {
+      merge_subgraphs_kernel<IdxT, 32, 4>
+        <<<num_data_in_cluster, 32, sharedMemSize, raft::resource::get_cuda_stream(res)>>>(
+          inverted_indices_d,
+          k,
+          num_data_in_cluster,
+          global_distances,
+          batch_distances_d,
+          global_neighbors,
+          batch_indices_d);
+    } else if (num_elems <= 512) {
+      merge_subgraphs_kernel<IdxT, 128, 4>
+        <<<num_data_in_cluster, 128, sharedMemSize, raft::resource::get_cuda_stream(res)>>>(
+          inverted_indices_d,
+          k,
+          num_data_in_cluster,
+          global_distances,
+          batch_distances_d,
+          global_neighbors,
+          batch_indices_d);
+    } else if (num_elems <= 1024) {
+      merge_subgraphs_kernel<IdxT, 128, 8>
+        <<<num_data_in_cluster, 128, sharedMemSize, raft::resource::get_cuda_stream(res)>>>(
+          inverted_indices_d,
+          k,
+          num_data_in_cluster,
+          global_distances,
+          batch_distances_d,
+          global_neighbors,
+          batch_indices_d);
+    } else if (num_elems <= 2048) {
+      merge_subgraphs_kernel<IdxT, 256, 8>
+        <<<num_data_in_cluster, 256, sharedMemSize, raft::resource::get_cuda_stream(res)>>>(
+          inverted_indices_d,
+          k,
+          num_data_in_cluster,
+          global_distances,
+          batch_distances_d,
+          global_neighbors,
+          batch_indices_d);
+    } else {
+      // this is as far as we can get due to the shared mem usage of cub::BlockMergeSort
+      RAFT_FAIL("The degree of knn is too large (%lu). It must be smaller than 1024", k);
+    }
   }
   raft::resource::sync_stream(res);
 }
@@ -245,7 +249,6 @@ void remap_and_merge_subgraphs(
     for (size_t j = 0; j < k; j++) {
       size_t local_idx      = tmp_indices_for_remap_h(i, j);
       batch_indices_h(i, j) = inverted_indices(local_idx);
-      ;
     }
   }
 
@@ -457,7 +460,8 @@ struct batch_knn_builder_nn_descent : public batch_knn_builder<T, IdxT> {
     size_t extended_intermediate_degree = align32::roundUp(
       static_cast<size_t>(intermediate_degree * (intermediate_degree <= 32 ? 1.0 : 1.3)));
 
-    build_config.max_dataset_size      = this->max_cluster_size;
+    build_config.max_dataset_size = this->max_cluster_size;
+    std::cout << "in nnd init, max dataset size: " << build_config.max_dataset_size << std::endl;
     build_config.dataset_dim           = dataset.extent(1);
     build_config.node_degree           = extended_graph_degree;
     build_config.internal_node_degree  = extended_intermediate_degree;
@@ -487,6 +491,7 @@ struct batch_knn_builder_nn_descent : public batch_knn_builder<T, IdxT> {
                               int_graph.value().data_handle(),
                               true,
                               batch_distances_d.data_handle());
+    std::cout << "done building nnd\n";
     remap_and_merge_subgraphs(res,
                               this->inverted_indices_d.view(),
                               inverted_indices,

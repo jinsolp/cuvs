@@ -1012,6 +1012,8 @@ GnndGraph<Index_t>::GnndGraph(raft::resources const& res,
     h_list_sizes_old{raft::make_pinned_vector<int2, size_t>(res, nrow)}
 {
   // node_degree must be a multiple of segment_size;
+  std::cout << "in gnndgraph constructor, nrow: " << nrow << " , node degree: " << node_degree
+            << std::endl;
   assert(node_degree % segment_size == 0);
   assert(internal_node_degree % segment_size == 0);
 
@@ -1274,6 +1276,7 @@ void GNND<Data_t, Index_t>::build(Data_t* data,
   cudaPointerAttributes data_ptr_attr;
   RAFT_CUDA_TRY(cudaPointerGetAttributes(&data_ptr_attr, data));
   size_t batch_size = (data_ptr_attr.devicePointer == nullptr) ? 100000 : nrow_;
+  std::cout << "before loading batches\n";
 
   cuvs::spatial::knn::detail::utils::batch_load_iterator vec_batches{
     data, static_cast<size_t>(nrow_), build_config_.dataset_dim, batch_size, stream};
@@ -1290,6 +1293,7 @@ void GNND<Data_t, Index_t>::build(Data_t* data,
                 batch.offset(),
                 build_config_.metric);
   }
+  std::cout << "after loading batches\n";
 
   graph_.clear();
   graph_.init_random_graph();
@@ -1311,6 +1315,7 @@ void GNND<Data_t, Index_t>::build(Data_t* data,
   };
 
   for (size_t it = 0; it < build_config_.max_iterations; it++) {
+    std::cout << "\titeration " << it + 1 << std::endl;
     raft::copy(d_list_sizes_new_.data_handle(),
                graph_.h_list_sizes_new.data_handle(),
                nrow_,
@@ -1324,7 +1329,7 @@ void GNND<Data_t, Index_t>::build(Data_t* data,
                nrow_,
                raft::resource::get_cuda_stream(res));
     raft::resource::sync_stream(res);
-
+    std::cout << "\tcopying done here " << it + 1 << std::endl;
     std::thread update_and_sample_thread(update_and_sample, it);
 
     RAFT_LOG_DEBUG("# GNND iteraton: %lu / %lu", it + 1, build_config_.max_iterations);
@@ -1386,6 +1391,7 @@ void GNND<Data_t, Index_t>::build(Data_t* data,
   // Reuse graph_.h_dists as the buffer for shrink the lists in graph
   static_assert(sizeof(decltype(*(graph_.h_dists.data_handle()))) >= sizeof(Index_t));
 
+  std::cout << "done up to copying return distances\n";
   if (return_distances) {
     auto graph_d_dists = raft::make_device_matrix<DistData_t, int64_t, raft::row_major>(
       res, nrow_, build_config_.node_degree);
