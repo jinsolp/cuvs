@@ -223,8 +223,9 @@ void merge_subgraphs(raft::resources const& res,
       // this is as far as we can get due to the shared mem usage of cub::BlockMergeSort
       RAFT_FAIL("The degree of knn is too large (%lu). It must be smaller than 1024", k);
     }
+
+    raft::resource::sync_stream(res);
   }
-  raft::resource::sync_stream(res);
 }
 
 template <typename T, typename IdxT = int64_t, typename BeforeRemapT = int64_t>
@@ -349,6 +350,7 @@ struct batch_knn_builder_ivfpq : public batch_knn_builder<T, IdxT> {
       this->res, this->max_cluster_size, gpu_top_k));
     tmp_indices_for_remap_h.emplace(
       raft::make_host_matrix<IdxT, int64_t, row_major>(this->max_cluster_size, this->k));
+    // std::cout << "prepare build is done\n";
   }
 
   void build_knn(raft::resources const& res,
@@ -379,7 +381,7 @@ struct batch_knn_builder_ivfpq : public batch_knn_builder<T, IdxT> {
     auto resulting_distances_d = raft::make_device_matrix_view<T, int64_t>(
       batch_distances_d.data_handle(), num_data_in_cluster, this->k);
 
-    auto index = ivf_pq::build(res, index_params, dataset);
+    auto index = ivf_pq::build(res, index_params, data_view);
     cuvs::neighbors::ivf_pq::search(
       res, search_params, index, data_view, neighbors_candidate_view, distances_candidate_view);
 
@@ -461,7 +463,7 @@ struct batch_knn_builder_nn_descent : public batch_knn_builder<T, IdxT> {
       static_cast<size_t>(intermediate_degree * (intermediate_degree <= 32 ? 1.0 : 1.3)));
 
     build_config.max_dataset_size = this->max_cluster_size;
-    std::cout << "in nnd init, max dataset size: " << build_config.max_dataset_size << std::endl;
+    // std::cout << "in nnd init, max dataset size: " << build_config.max_dataset_size << std::endl;
     build_config.dataset_dim           = dataset.extent(1);
     build_config.node_degree           = extended_graph_degree;
     build_config.internal_node_degree  = extended_intermediate_degree;
@@ -491,7 +493,7 @@ struct batch_knn_builder_nn_descent : public batch_knn_builder<T, IdxT> {
                               int_graph.value().data_handle(),
                               true,
                               batch_distances_d.data_handle());
-    std::cout << "done building nnd\n";
+    // std::cout << "done building nnd\n";
     remap_and_merge_subgraphs(res,
                               this->inverted_indices_d.view(),
                               inverted_indices,

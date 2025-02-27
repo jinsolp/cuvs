@@ -241,10 +241,10 @@ void single_gpu_batch_build(const raft::resources& handle,
            n_clusters);
     size_t num_data_in_cluster = cluster_sizes(cluster_id);
     size_t offset              = cluster_offsets(cluster_id);
-    printf("\t[THREAD %lu] num data in cluster %lu, offset %lu\n",
-           static_cast<size_t>(omp_get_thread_num()),
-           num_data_in_cluster,
-           offset);
+    // printf("\t[THREAD %lu] num data in cluster %lu, offset %lu\n",
+    //        static_cast<size_t>(omp_get_thread_num()),
+    //        num_data_in_cluster,
+    //        offset);
 #pragma omp parallel for
     for (size_t i = 0; i < num_data_in_cluster; i++) {
       for (size_t j = 0; j < num_cols; j++) {
@@ -274,7 +274,6 @@ void single_gpu_batch_build(const raft::resources& handle,
 template <typename T, typename IdxT>
 void multi_gpu_batch_build(const raft::resources& handle,
                            raft::host_matrix_view<const T, int64_t, row_major> dataset,
-                           detail::batch_knn_builder<T, IdxT>& knn_builder,
                            IdxT* global_neighbors,
                            T* global_distances,
                            size_t max_cluster_size,
@@ -301,8 +300,8 @@ void multi_gpu_batch_build(const raft::resources& handle,
     const raft::device_resources& dev_res = clique.device_resources_[rank];
     RAFT_CUDA_TRY(cudaSetDevice(dev_id));
 
-    std::unique_ptr<batch_knn_builder<T, IdxT>> new_knn_builder =
-      get_knn_builder(handle, index, params, min_cluster_size, max_cluster_size);
+    std::unique_ptr<batch_knn_builder<T, IdxT>> knn_builder =
+      get_knn_builder(dev_res, index, params, min_cluster_size, max_cluster_size);
 
     size_t num_data_for_this_rank = 0;
     size_t base_cluster_idx       = rank * clusters_per_rank + std::min((size_t)rank, rem);
@@ -315,14 +314,15 @@ void multi_gpu_batch_build(const raft::resources& handle,
     }
 
     size_t rank_offset = cluster_offsets(base_cluster_idx);
-    printf(
-      "[THREAD %lu] num data for this rank %lu, base cluster idx %lu, num clusters for this rank "
-      "%lu, rank offset: %lu\n",
-      static_cast<size_t>(omp_get_thread_num()),
-      num_data_for_this_rank,
-      base_cluster_idx,
-      num_clusters_for_this_rank,
-      rank_offset);
+    // printf(
+    //   "[THREAD %lu] num data for this rank %lu, base cluster idx %lu, num clusters for this rank
+    //   "
+    //   "%lu, rank offset: %lu\n",
+    //   static_cast<size_t>(omp_get_thread_num()),
+    //   num_data_for_this_rank,
+    //   base_cluster_idx,
+    //   num_clusters_for_this_rank,
+    //   rank_offset);
     // re-map offsets for each rank
     for (size_t p = 0; p < num_clusters_for_this_rank; p++) {
       cluster_offsets(base_cluster_idx + p) -= rank_offset;
@@ -336,9 +336,9 @@ void multi_gpu_batch_build(const raft::resources& handle,
       cluster_offsets.data_handle() + base_cluster_idx, num_clusters_for_this_rank);
     auto cluster_inverted_indices = raft::make_host_vector_view<IdxT, IdxT>(
       inverted_indices.data_handle() + rank_offset, num_clusters_for_this_rank);
-    single_gpu_batch_build(handle,
+    single_gpu_batch_build(dev_res,
                            dataset,
-                           *new_knn_builder,
+                           *knn_builder,
                            global_neighbors,
                            global_distances,
                            max_cluster_size,
@@ -404,8 +404,8 @@ void build(const raft::resources& handle,
             global_distances.data_handle() + num_rows * index.k,
             std::numeric_limits<float>::max());
 
-  std::unique_ptr<batch_knn_builder<T, IdxT>> knn_builder =
-    get_knn_builder(handle, index, batch_params, min_cluster_size, max_cluster_size);
+  // std::unique_ptr<batch_knn_builder<T, IdxT>> knn_builder =
+  //   get_knn_builder(handle, index, batch_params, min_cluster_size, max_cluster_size);
 
   const raft::comms::nccl_clique& clique = raft::resource::get_nccl_clique(handle);
 
@@ -414,7 +414,6 @@ void build(const raft::resources& handle,
     std::cout << "Running multi gpu\n";
     multi_gpu_batch_build(handle,
                           dataset,
-                          *knn_builder,
                           global_neighbors.data_handle(),
                           global_distances.data_handle(),
                           max_cluster_size,
@@ -427,6 +426,8 @@ void build(const raft::resources& handle,
   } else {
     // single gpu support
     std::cout << "Running single gpu\n";
+    std::unique_ptr<batch_knn_builder<T, IdxT>> knn_builder =
+      get_knn_builder(handle, index, batch_params, min_cluster_size, max_cluster_size);
     single_gpu_batch_build(handle,
                            dataset,
                            *knn_builder,
