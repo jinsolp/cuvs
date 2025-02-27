@@ -14,11 +14,11 @@
  * limitations under the License.
  */
 #pragma once
-//  #include "batch_knn.cuh"
-//  #include <cuvs/neighbors/batch_knn.hpp>
 #include "../detail/nn_descent.cuh"
+#include "cuvs/neighbors/batch_knn.hpp"
 #include "cuvs/neighbors/ivf_pq.hpp"
 #include "cuvs/neighbors/nn_descent.hpp"
+#include "cuvs/neighbors/refine.hpp"
 #include <cstddef>
 #include <cuda.h>
 #include <raft/core/device_mdarray.hpp>
@@ -30,9 +30,6 @@
 #include <raft/core/resources.hpp>
 #include <raft/matrix/sample_rows.cuh>
 #include <raft/util/cudart_utils.hpp>
-//  #include "batch_knn_common.cuh"
-#include "cuvs/neighbors/batch_knn.hpp"
-#include "cuvs/neighbors/refine.hpp"
 
 namespace cuvs::neighbors::batch_knn::detail {
 using namespace cuvs::neighbors;
@@ -328,11 +325,6 @@ struct batch_knn_builder_ivfpq : public batch_knn_builder<T, IdxT> {
       search_params{params.search_params}
   {
     refinement_rate = params.refinement_rate;  // TODO need to handle this
-    // TODO: take care of this part
-    // index_params.kmeans_trainset_fraction     = 1.0;  // what percentage of data do you want to
-    // index_params.kmeans_n_iters               = 50;
-    // index_params.n_lists                      = 5;
-    // index_params.max_train_points_per_pq_code = 512;
 
     if (index_params.n_lists > static_cast<uint32_t>(max_cluster_size / 1000) ||
         index_params.n_lists <= static_cast<uint32_t>(min_cluster_size / 10000)) {
@@ -367,8 +359,6 @@ struct batch_knn_builder_ivfpq : public batch_knn_builder<T, IdxT> {
                  raft::device_matrix_view<IdxT, int64_t, row_major> batch_indices_d,
                  raft::device_matrix_view<T, int64_t, row_major> batch_distances_d) override
   {
-    auto index = ivf_pq::build(res, index_params, dataset);
-
     size_t num_cols = dataset.extent(1);
     raft::copy(data_d.value().data_handle(),
                dataset.data_handle(),
@@ -381,14 +371,14 @@ struct batch_knn_builder_ivfpq : public batch_knn_builder<T, IdxT> {
       distances_candidate_d.value().data_handle(), num_data_in_cluster, gpu_top_k);
     auto neighbors_candidate_view = raft::make_device_matrix_view<IdxT, int64_t>(
       neighbors_candidate_d.value().data_handle(), num_data_in_cluster, gpu_top_k);
-
-    cuvs::neighbors::ivf_pq::search(
-      res, search_params, index, data_view, neighbors_candidate_view, distances_candidate_view);
-
     auto resulting_indices_d = raft::make_device_matrix_view<IdxT, int64_t>(
       batch_indices_d.data_handle(), num_data_in_cluster, this->k);
     auto resulting_distances_d = raft::make_device_matrix_view<T, int64_t>(
       batch_distances_d.data_handle(), num_data_in_cluster, this->k);
+
+    auto index = ivf_pq::build(res, index_params, dataset);
+    cuvs::neighbors::ivf_pq::search(
+      res, search_params, index, data_view, neighbors_candidate_view, distances_candidate_view);
 
     refine(res,
            data_view,

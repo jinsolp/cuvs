@@ -185,7 +185,6 @@ std::unique_ptr<batch_knn_builder<T, IdxT>> get_knn_builder(const raft::resource
                                                             size_t max_cluster_size)
 {
   if (std::holds_alternative<graph_build_params::nn_descent_params>(params.graph_build_params)) {
-    std::cout << "getting knn builder. build algo is NND\n";
     auto nn_descent_params =
       std::get<graph_build_params::nn_descent_params>(params.graph_build_params);
 
@@ -197,7 +196,6 @@ std::unique_ptr<batch_knn_builder<T, IdxT>> get_knn_builder(const raft::resource
                                                                    static_cast<size_t>(index.k),
                                                                    index.return_distances);
   } else if (std::holds_alternative<graph_build_params::ivf_pq_params>(params.graph_build_params)) {
-    std::cout << "getting knn builder. build algo is IVF-PQ\n";
     auto ivf_pq_params = std::get<graph_build_params::ivf_pq_params>(params.graph_build_params);
     return std::make_unique<batch_knn_builder_ivfpq<T, IdxT>>(handle,
                                                               params.n_clusters,
@@ -235,7 +233,6 @@ void single_gpu_batch_build(const raft::resources& handle,
   auto batch_distances_d =
     raft::make_device_matrix<float, int64_t, row_major>(handle, max_cluster_size, index.k);
 
-  // prepare build is for large stuff
   knn_builder.prepare_build(dataset);
   raft::print_host_vector(
     "cluster sizes", cluster_sizes.data_handle(), params.n_clusters, std::cout);
@@ -258,6 +255,7 @@ void single_gpu_batch_build(const raft::resources& handle,
       cluster_data.data_handle(), num_data_in_cluster, num_cols);
     auto inverted_indices_view = raft::make_host_vector_view<IdxT, int64_t>(
       inverted_indices.data_handle() + offset, num_data_in_cluster);
+
     knn_builder.build_knn(handle,
                           params,
                           num_data_in_cluster,
@@ -272,7 +270,6 @@ void single_gpu_batch_build(const raft::resources& handle,
 }
 
 // only supports host data for now
-// use template types for index params and search params??
 template <typename T, typename IdxT>
 void build(const raft::resources& handle,
            raft::host_matrix_view<const T, int64_t, row_major> dataset,
