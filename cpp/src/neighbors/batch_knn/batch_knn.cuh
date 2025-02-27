@@ -256,13 +256,15 @@ void single_gpu_batch_build(const raft::resources& handle,
 
     auto cluster_data_view = raft::make_host_matrix_view<const T, int64_t>(
       cluster_data.data_handle(), num_data_in_cluster, num_cols);
+    auto inverted_indices_view = raft::make_host_vector_view<IdxT, int64_t>(
+      inverted_indices.data_handle() + offset, num_data_in_cluster);
     knn_builder.build_knn(handle,
                           params,
                           num_data_in_cluster,
                           global_neighbors,
                           global_distances,
                           cluster_data_view,
-                          inverted_indices.data_handle() + offset,
+                          inverted_indices_view,
                           batch_indices_h.view(),
                           batch_indices_d.view(),
                           batch_distances_d.view());
