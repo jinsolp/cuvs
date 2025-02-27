@@ -99,7 +99,6 @@ void get_global_nearest_clusters(
     res, n_rows_per_batch, num_nearest_clusters);
 
   // maybe do this part multi-gpu too?
-
   for (size_t i = 0; i < num_batches; i++) {
     size_t row_offset              = n_rows_per_batch * i;
     size_t n_rows_of_current_batch = std::min(n_rows_per_batch, num_rows - row_offset);
