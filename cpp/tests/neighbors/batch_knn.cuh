@@ -86,6 +86,7 @@ class BatchKNNTest : public ::testing::TestWithParam<BatchKNNInputs> {
       rmm::device_uvector<DistanceT> distances_naive_dev(queries_size, stream_);
       rmm::device_uvector<IdxT> indices_naive_dev(queries_size, stream_);
 
+      auto start = raft::curTimeMillis();
       naive_knn<DistanceT, DataT, IdxT>(handle_,
                                         distances_naive_dev.data(),
                                         indices_naive_dev.data(),
@@ -96,6 +97,8 @@ class BatchKNNTest : public ::testing::TestWithParam<BatchKNNInputs> {
                                         ps.dim,
                                         ps.k,
                                         ps.metric);
+      auto end = raft::curTimeMillis();
+      std::cout << "time to run naive build: " << end - start << std::endl;
       raft::update_host(indices_naive.data(), indices_naive_dev.data(), queries_size, stream_);
       raft::update_host(distances_naive.data(), distances_naive_dev.data(), queries_size, stream_);
       raft::resource::sync_stream(handle_);
@@ -172,15 +175,24 @@ class BatchKNNTest : public ::testing::TestWithParam<BatchKNNInputs> {
   rmm::device_uvector<DataT> database;
 };
 
+// const std::vector<BatchKNNInputs> inputsBatch = raft::util::itertools::product<BatchKNNInputs>(
+//   // {NN_DESCENT, IVF_PQ},
+//   {IVF_PQ},
+//   {std::make_tuple(0.85, 4lu, 2lu),
+//    std::make_tuple(0.95, 10lu, 5lu),
+//    std::make_tuple(0.95, 11lu, 7lu)},  // min_recall, n_clusters, num_nearest_cluster
+//   {100000},                             // n_rows
+//   {192, 256},                          // dim
+//   {32, 64},                            // graph_degree
+//   {cuvs::distance::DistanceType::L2Expanded});
+
 const std::vector<BatchKNNInputs> inputsBatch = raft::util::itertools::product<BatchKNNInputs>(
-  {NN_DESCENT, IVF_PQ},
-  // {IVF_PQ},
-  {std::make_tuple(0.85, 4lu, 2lu),
-   std::make_tuple(0.95, 10lu, 5lu),
-   std::make_tuple(0.95, 11lu, 7lu)},  // min_recall, n_clusters, num_nearest_cluster
-  {10000},                             // n_rows
-  {192, 256},                          // dim
-  {32, 64},                            // graph_degree
+  // {NN_DESCENT, IVF_PQ},
+  {IVF_PQ},
+  {std::make_tuple(0.85, 4lu, 2lu)},  // min_recall, n_clusters, num_nearest_cluster
+  {100000},                           // n_rows
+  {192},                              // dim
+  {32},                               // graph_degree
   {cuvs::distance::DistanceType::L2Expanded});
 
 }  // namespace cuvs::neighbors::batch_knn

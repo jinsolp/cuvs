@@ -364,6 +364,7 @@ struct batch_knn_builder_ivfpq : public batch_knn_builder<T, IdxT> {
                  raft::device_matrix_view<T, int64_t, row_major> batch_distances_d) override
   {
     size_t num_cols = dataset.extent(1);
+    auto start      = raft::curTimeMillis();
     raft::copy(data_d.value().data_handle(),
                dataset.data_handle(),
                num_data_in_cluster * num_cols,
@@ -380,10 +381,27 @@ struct batch_knn_builder_ivfpq : public batch_knn_builder<T, IdxT> {
     auto resulting_distances_d = raft::make_device_matrix_view<T, int64_t>(
       batch_distances_d.data_handle(), num_data_in_cluster, this->k);
 
+    auto end = raft::curTimeMillis();
+    printf("\tintializing stuff: %u\n", end - start);
+
+    start = raft::curTimeMillis();
+    nvtxRangePushA("IVFPQ build index");
     auto index = ivf_pq::build(res, index_params, data_view);
+    nvtxRangePop();
+
+    end = raft::curTimeMillis();
+    printf("\tactually building the index: %u\n", end - start);
+    start = raft::curTimeMillis();
+
+    nvtxRangePushA("IVFPQ search");
     cuvs::neighbors::ivf_pq::search(
       res, search_params, index, data_view, neighbors_candidate_view, distances_candidate_view);
+    nvtxRangePop();
+    end = raft::curTimeMillis();
+    printf("\tdoing search: %u\n", end - start);
 
+    start = raft::curTimeMillis();
+    nvtxRangePushA("IVFPQ refine");
     refine(res,
            data_view,
            data_view,
@@ -391,11 +409,16 @@ struct batch_knn_builder_ivfpq : public batch_knn_builder<T, IdxT> {
            resulting_indices_d,
            resulting_distances_d,
            params.metric);
-
+    end = raft::curTimeMillis();
+    printf("\tdoing refine: %u\n", end - start);
+    nvtxRangePop();
     raft::copy(tmp_indices_for_remap_h.value().data_handle(),
                resulting_indices_d.data_handle(),
                num_data_in_cluster * this->k,
                raft::resource::get_cuda_stream(res));
+
+    start = raft::curTimeMillis();
+    nvtxRangePushA("IVFPQ remap and merge subgraphs");
     remap_and_merge_subgraphs(res,
                               this->inverted_indices_d.view(),
                               inverted_indices,
@@ -407,6 +430,9 @@ struct batch_knn_builder_ivfpq : public batch_knn_builder<T, IdxT> {
                               global_distances,
                               num_data_in_cluster,
                               this->k);
+    nvtxRangePop();
+    end = raft::curTimeMillis();
+    printf("\tremap and merge subgraphs: %u\n", end - start);
   }
 
   ivf_pq::index_params index_params;
