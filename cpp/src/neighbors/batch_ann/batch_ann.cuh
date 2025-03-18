@@ -448,6 +448,103 @@ void build(const raft::resources& handle,
   }
 }
 
+template <typename T, typename IdxT>
+void build_clusters(const raft::resources& handle,
+                    raft::host_matrix_view<const T, int64_t, row_major> dataset,
+                    const index_params& batch_params,
+                    int64_t k,
+                    size_t& max_cluster_size,
+                    size_t& min_cluster_size,
+                    raft::host_vector_view<IdxT, IdxT, row_major> cluster_sizes,
+                    raft::host_vector_view<IdxT, IdxT, row_major> cluster_offsets,
+                    raft::host_vector_view<IdxT, IdxT, row_major> inverted_indices)
+{
+  size_t num_rows = static_cast<size_t>(dataset.extent(0));
+  size_t num_cols = static_cast<size_t>(dataset.extent(1));
+
+  size_t n_nearest_clusters = batch_params.n_nearest_clusters;
+  size_t n_clusters         = batch_params.n_clusters;
+
+  auto centroids = raft::make_device_matrix<T, IdxT, raft::row_major>(handle, n_clusters, num_cols);
+  get_centroids_on_data_subsample<T, IdxT>(handle, batch_params.metric, dataset, centroids.view());
+
+  auto global_nearest_cluster =
+    raft::make_host_matrix<IdxT, IdxT, raft::row_major>(num_rows, n_nearest_clusters);
+  get_global_nearest_clusters<T, IdxT>(handle,
+                                       n_nearest_clusters,
+                                       n_clusters,
+                                       dataset,
+                                       global_nearest_cluster.view(),
+                                       centroids.view(),
+                                       batch_params.metric);
+
+  // size_t max_cluster_size, min_cluster_size;
+  get_inverted_indices(handle,
+                       n_clusters,
+                       k,
+                       max_cluster_size,
+                       min_cluster_size,
+                       global_nearest_cluster.view(),
+                       inverted_indices,
+                       cluster_sizes,
+                       cluster_offsets);
+  raft::print_host_vector(
+    "cluster sizes in build_clusters function", cluster_sizes.data_handle(), n_clusters, std::cout);
+  // auto global_neighbors = raft::make_managed_matrix<IdxT, int64_t>(handle, num_rows, index.k());
+  // auto global_distances = raft::make_managed_matrix<float, int64_t>(handle, num_rows, index.k());
+
+  // std::fill(global_neighbors.data_handle(),
+  //           global_neighbors.data_handle() + num_rows * index.k(),
+  //           std::numeric_limits<IdxT>::max());
+  // std::fill(global_distances.data_handle(),
+  //           global_distances.data_handle() + num_rows * index.k(),
+  //           std::numeric_limits<float>::max());
+
+  // const raft::comms::nccl_clique& clique = raft::resource::get_nccl_clique(handle);
+
+  // if (clique.num_ranks_ > 1) {
+  //   std::cout << "Running multi gpu\n";
+  //   multi_gpu_batch_build(handle,
+  //                         dataset,
+  //                         global_neighbors.view(),
+  //                         global_distances.view(),
+  //                         max_cluster_size,
+  //                         min_cluster_size,
+  //                         index,
+  //                         batch_params,
+  //                         cluster_sizes.view(),
+  //                         cluster_offsets.view(),
+  //                         inverted_indices.view());
+  // } else {
+  //   std::cout << "Running single gpu\n";
+  //   std::unique_ptr<batch_ann_builder<T, IdxT>> knn_builder = get_knn_builder<T, IdxT>(
+  //     handle, batch_params, static_cast<size_t>(index.k()), min_cluster_size, max_cluster_size);
+  //   single_gpu_batch_build(handle,
+  //                          dataset,
+  //                          *knn_builder,
+  //                          global_neighbors.view(),
+  //                          global_distances.view(),
+  //                          max_cluster_size,
+  //                          n_clusters,
+  //                          index,
+  //                          batch_params,
+  //                          cluster_sizes.view(),
+  //                          cluster_offsets.view(),
+  //                          inverted_indices.view());
+  // }
+
+  // raft::copy(index.graph().data_handle(),
+  //            global_neighbors.data_handle(),
+  //            num_rows * index.k(),
+  //            raft::resource::get_cuda_stream(handle));
+  // if (index.return_distances() && index.distances().has_value()) {
+  //   raft::copy(index.distances().value().data_handle(),
+  //              global_distances.data_handle(),
+  //              num_rows * index.k(),
+  //              raft::resource::get_cuda_stream(handle));
+  // }
+}
+
 template <typename T, typename IdxT = int64_t>
 batch_ann::index<IdxT, T> build(const raft::resources& handle,
                                 raft::host_matrix_view<const T, int64_t, row_major> dataset,

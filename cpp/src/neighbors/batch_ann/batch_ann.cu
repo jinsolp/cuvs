@@ -27,6 +27,27 @@ namespace cuvs::neighbors::batch_ann {
                                   bool return_distances)                                       \
   {                                                                                            \
     return batch_ann::detail::build<T, IdxT>(handle, dataset, k, params, return_distances);    \
+  }                                                                                            \
+                                                                                               \
+  void build_clusters(const raft::resources& handle,                                           \
+                      raft::host_matrix_view<const T, int64_t, row_major> dataset,             \
+                      const index_params& batch_params,                                        \
+                      int64_t k,                                                               \
+                      size_t& max_cluster_size,                                                \
+                      size_t& min_cluster_size,                                                \
+                      raft::host_vector_view<IdxT, int64_t> cluster_sizes,                     \
+                      raft::host_vector_view<IdxT, int64_t> cluster_offsets,                   \
+                      raft::host_vector_view<IdxT, int64_t> inverted_indices)                  \
+  {                                                                                            \
+    return batch_ann::detail::build_clusters<T, IdxT>(handle,                                  \
+                                                      dataset,                                 \
+                                                      batch_params,                            \
+                                                      k,                                       \
+                                                      max_cluster_size,                        \
+                                                      min_cluster_size,                        \
+                                                      cluster_sizes,                           \
+                                                      cluster_offsets,                         \
+                                                      inverted_indices);                       \
   }
 
 CUVS_INST_BATCH_KNN(float, int64_t);

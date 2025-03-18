@@ -199,4 +199,18 @@ auto build(const raft::resources& handle,
            const index_params& params,
            bool return_distances = false) -> index<int64_t, float>;
 
+// void build(const raft::resources& handle,
+//             raft::host_matrix_view<const float, int64_t, row_major> dataset,
+//             const index_params& batch_params,
+//            batch_ann::index<int64_t, float>& index);
+
+void build_clusters(const raft::resources& handle,
+                    raft::host_matrix_view<const float, int64_t, row_major> dataset,
+                    const index_params& batch_params,
+                    int64_t k,
+                    size_t& max_cluster_size,
+                    size_t& min_cluster_size,
+                    raft::host_vector_view<int64_t, int64_t> cluster_sizes,
+                    raft::host_vector_view<int64_t, int64_t> cluster_offsets,
+                    raft::host_vector_view<int64_t, int64_t> inverted_indices);
 }  // namespace cuvs::neighbors::batch_ann
