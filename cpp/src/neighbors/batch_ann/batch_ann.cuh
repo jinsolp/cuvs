@@ -268,12 +268,16 @@ void single_gpu_batch_build(const raft::resources& handle,
     auto inverted_indices_view = raft::make_host_vector_view<IdxT, int64_t>(
       inverted_indices.data_handle() + offset, num_data_in_cluster);
 
+    auto start = raft::curTimeMillis();
     knn_builder.build_knn(handle,
                           batch_params,
                           cluster_data_view,
                           inverted_indices_view,
                           global_neighbors,
                           global_distances);
+    auto end = raft::curTimeMillis();
+    std::cout << "[THREAD " << omp_get_thread_num() << "] time to build " << end - start
+              << "(num data in cluster " << num_data_in_cluster << ")" << std::endl;
   }
 }
 
@@ -388,7 +392,7 @@ void build(const raft::resources& handle,
                        inverted_indices.view(),
                        cluster_sizes.view(),
                        cluster_offsets.view());
-
+  raft::print_host_vector("cluster sizes", cluster_sizes.data_handle(), n_clusters, std::cout);
   auto global_neighbors = raft::make_managed_matrix<IdxT, int64_t>(handle, num_rows, index.k());
   auto global_distances = raft::make_managed_matrix<float, int64_t>(handle, num_rows, index.k());
 

@@ -345,11 +345,11 @@ class BatchANNTest : public ::testing::TestWithParam<BatchANNInputs> {
                   n_samples * n_features * sizeof(float));
 
         database.resize(n_samples * n_features, stream_);
-        raft::print_host_vector("data on host", database_h.value().data_handle(), 10, std::cout);
-        raft::print_host_vector("data on host last parts",
-                                database_h.value().data_handle() + n_samples * n_features - 10,
-                                10,
-                                std::cout);
+        // raft::print_host_vector("data on host", database_h.value().data_handle(), 10, std::cout);
+        // raft::print_host_vector("data on host last parts",
+        //                         database_h.value().data_handle() + n_samples * n_features - 10,
+        //                         10,
+        //                         std::cout);
         ps.n_rows = n_samples;
         ps.dim    = n_features;
         raft::copy(database.data(),
@@ -383,11 +383,11 @@ class BatchANNTest : public ::testing::TestWithParam<BatchANNInputs> {
         // std::cout << "size of database is " << database_h.value().size() << std::endl;
 
         database.resize(n_samples * n_features, stream_);
-        raft::print_host_vector("data on host", database_h.value().data_handle(), 10, std::cout);
-        raft::print_host_vector("data on host last parts",
-                                database_h.value().data_handle() + n_samples * n_features - 10,
-                                10,
-                                std::cout);
+        // raft::print_host_vector("data on host", database_h.value().data_handle(), 10, std::cout);
+        // raft::print_host_vector("data on host last parts",
+        //                         database_h.value().data_handle() + n_samples * n_features - 10,
+        //                         10,
+        //                         std::cout);
         ps.n_rows = n_samples;
         ps.dim    = n_features;
         raft::copy(database.data(),
@@ -421,11 +421,11 @@ class BatchANNTest : public ::testing::TestWithParam<BatchANNInputs> {
         // std::cout << "size of database is " << database_h.value().size() << std::endl;
 
         database.resize(n_samples * n_features, stream_);
-        raft::print_host_vector("data on host", database_h.value().data_handle(), 10, std::cout);
-        raft::print_host_vector("data on host last parts",
-                                database_h.value().data_handle() + n_samples * n_features - 10,
-                                10,
-                                std::cout);
+        // raft::print_host_vector("data on host", database_h.value().data_handle(), 10, std::cout);
+        // raft::print_host_vector("data on host last parts",
+        //                         database_h.value().data_handle() + n_samples * n_features - 10,
+        //                         10,
+        //                         std::cout);
         ps.n_rows = n_samples;
         ps.dim    = n_features;
 
@@ -460,11 +460,11 @@ class BatchANNTest : public ::testing::TestWithParam<BatchANNInputs> {
         // std::cout << "size of database is " << database_h.value().size() << std::endl;
 
         // database.resize(n_samples * n_features, stream_);
-        raft::print_host_vector("data on host", database_h.value().data_handle(), 10, std::cout);
-        raft::print_host_vector("data on host last parts",
-                                database_h.value().data_handle() + n_samples * n_features - 10,
-                                10,
-                                std::cout);
+        // raft::print_host_vector("data on host", database_h.value().data_handle(), 10, std::cout);
+        // raft::print_host_vector("data on host last parts",
+        //                         database_h.value().data_handle() + n_samples * n_features - 10,
+        //                         10,
+        //                         std::cout);
         ps.n_rows = n_samples;
         ps.dim    = n_features;
 
@@ -528,13 +528,17 @@ class BatchANNTest : public ::testing::TestWithParam<BatchANNInputs> {
 };
 
 const std::vector<BatchANNInputs> inputsBatch = raft::util::itertools::product<BatchANNInputs>(
-  //    {SIFT, GIST, DEEP},
-  {DEEP},
-  //    {NN_DESCENT, IVF_PQ},
-  {IVF_PQ},
+  {SIFT, DEEP, SIFT_MMAP},
+  // {DEEP},
+  {NN_DESCENT, IVF_PQ},
+  // {IVF_PQ},
   // {std::make_tuple(1.0, 1lu, 1lu)},  // min_recall, n_clusters, num_nearest_cluster
   {
-    std::make_tuple(1.0, 10lu, 2lu)
+    std::make_tuple(1.0, 1lu, 1lu),
+    std::make_tuple(1.0, 4lu, 2lu),
+    std::make_tuple(1.0, 10lu, 2lu),
+    std::make_tuple(1.0, 20lu, 2lu),
+    std::make_tuple(1.0, 40lu, 4lu)
     // ,
     // std::make_tuple(1.0, 10lu, 2lu),
     // std::make_tuple(1.0, 1lu, 1lu)
