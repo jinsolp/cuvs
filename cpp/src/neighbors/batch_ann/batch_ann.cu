@@ -33,21 +33,34 @@ namespace cuvs::neighbors::batch_ann {
                       raft::host_matrix_view<const T, int64_t, row_major> dataset,             \
                       const index_params& batch_params,                                        \
                       int64_t k,                                                               \
-                      size_t& max_cluster_size,                                                \
-                      size_t& min_cluster_size,                                                \
                       raft::host_vector_view<IdxT, int64_t> cluster_sizes,                     \
                       raft::host_vector_view<IdxT, int64_t> cluster_offsets,                   \
                       raft::host_vector_view<IdxT, int64_t> inverted_indices)                  \
   {                                                                                            \
-    return batch_ann::detail::build_clusters<T, IdxT>(handle,                                  \
-                                                      dataset,                                 \
-                                                      batch_params,                            \
-                                                      k,                                       \
-                                                      max_cluster_size,                        \
-                                                      min_cluster_size,                        \
-                                                      cluster_sizes,                           \
-                                                      cluster_offsets,                         \
-                                                      inverted_indices);                       \
+    return batch_ann::detail::build_clusters<T, IdxT>(                                         \
+      handle, dataset, batch_params, k, cluster_sizes, cluster_offsets, inverted_indices);     \
+  }                                                                                            \
+  void full_single_gpu_build(const raft::resources& handle,                                    \
+                             raft::host_matrix_view<const T, int64_t, row_major> dataset,      \
+                             size_t max_cluster_size,                                          \
+                             size_t min_cluster_size,                                          \
+                             size_t n_clusters,                                                \
+                             const index_params& batch_params,                                 \
+                             raft::host_vector_view<IdxT, IdxT, row_major> cluster_sizes,      \
+                             raft::host_vector_view<IdxT, IdxT, row_major> cluster_offsets,    \
+                             raft::host_vector_view<IdxT, IdxT, row_major> inverted_indices,   \
+                             batch_ann::index<IdxT, T>& index)                                 \
+  {                                                                                            \
+    return batch_ann::detail::full_single_gpu_build<T, IdxT>(handle,                           \
+                                                             dataset,                          \
+                                                             max_cluster_size,                 \
+                                                             min_cluster_size,                 \
+                                                             n_clusters,                       \
+                                                             batch_params,                     \
+                                                             cluster_sizes,                    \
+                                                             cluster_offsets,                  \
+                                                             inverted_indices,                 \
+                                                             index);                           \
   }
 
 CUVS_INST_BATCH_KNN(float, int64_t);

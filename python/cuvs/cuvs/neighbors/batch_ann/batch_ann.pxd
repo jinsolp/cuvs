@@ -50,20 +50,30 @@ cdef extern from "cuvs/neighbors/batch_ann.h" nogil:
     cuvsError_t cuvsBatchANNIndexParamsDestroy(
         cuvsBatchANNIndexParams_t index)
 
-    # cuvsError_t cuvsNNDescentIndexCreate(cuvsNNDescentIndex_t* index)
+    cuvsError_t cuvsBatchANNIndexCreate(cuvsBatchANNIndex_t* index)
 
-    # cuvsError_t cuvsNNDescentIndexDestroy(cuvsNNDescentIndex_t index)
+    # cuvsError_t cuvsBatchANNIndexDestroy(cuvsBatchANNIndex_t index)
 
-    # cuvsError_t cuvsNNDescentIndexGetGraph(cuvsNNDescentIndex_t index,
-    #                                        DLManagedTensor * output)
+    cuvsError_t cuvsBatchANNIndexGetGraph(cuvsBatchANNIndex_t index,
+                                          DLManagedTensor * output)
 
     cuvsError_t cuvsBatchANNBuildClusters(cuvsResources_t res,
                                           cuvsBatchANNIndexParams* params,
                                           DLManagedTensor* dataset,
                                           size_t k,
-                                          size_t* max_cluster_size,
-                                          size_t* min_cluster_size,
                                           DLManagedTensor* cluster_sizes,
                                           DLManagedTensor* cluster_offsets,
                                           DLManagedTensor* inverted_indices) \
+        except +
+
+    cuvsError_t cuvsBatchANNFullSingleGPUBuild(cuvsResources_t res,
+                                               DLManagedTensor* dataset,
+                                               size_t max_cluster_size,
+                                               size_t min_cluster_size,
+                                               size_t n_clusters,
+                                               cuvsBatchANNIndexParams* p,
+                                               DLManagedTensor* cluster_sz,
+                                               DLManagedTensor* cluster_off,
+                                               DLManagedTensor* inverted_ind,
+                                               cuvsBatchANNIndex_t index) \
         except +

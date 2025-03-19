@@ -453,8 +453,6 @@ void build_clusters(const raft::resources& handle,
                     raft::host_matrix_view<const T, int64_t, row_major> dataset,
                     const index_params& batch_params,
                     int64_t k,
-                    size_t& max_cluster_size,
-                    size_t& min_cluster_size,
                     raft::host_vector_view<IdxT, IdxT, row_major> cluster_sizes,
                     raft::host_vector_view<IdxT, IdxT, row_major> cluster_offsets,
                     raft::host_vector_view<IdxT, IdxT, row_major> inverted_indices)
@@ -478,7 +476,7 @@ void build_clusters(const raft::resources& handle,
                                        centroids.view(),
                                        batch_params.metric);
 
-  // size_t max_cluster_size, min_cluster_size;
+  size_t max_cluster_size, min_cluster_size;
   get_inverted_indices(handle,
                        n_clusters,
                        k,
@@ -490,59 +488,87 @@ void build_clusters(const raft::resources& handle,
                        cluster_offsets);
   raft::print_host_vector(
     "cluster sizes in build_clusters function", cluster_sizes.data_handle(), n_clusters, std::cout);
-  // auto global_neighbors = raft::make_managed_matrix<IdxT, int64_t>(handle, num_rows, index.k());
-  // auto global_distances = raft::make_managed_matrix<float, int64_t>(handle, num_rows, index.k());
+}
 
-  // std::fill(global_neighbors.data_handle(),
-  //           global_neighbors.data_handle() + num_rows * index.k(),
-  //           std::numeric_limits<IdxT>::max());
-  // std::fill(global_distances.data_handle(),
-  //           global_distances.data_handle() + num_rows * index.k(),
-  //           std::numeric_limits<float>::max());
+template <typename T, typename IdxT>
+void full_single_gpu_build(const raft::resources& handle,
+                           raft::host_matrix_view<const T, int64_t, row_major> dataset,
+                           size_t max_cluster_size,
+                           size_t min_cluster_size,
+                           size_t n_clusters,
+                           const index_params& batch_params,
+                           raft::host_vector_view<IdxT, IdxT, row_major> cluster_sizes,
+                           raft::host_vector_view<IdxT, IdxT, row_major> cluster_offsets,
+                           raft::host_vector_view<IdxT, IdxT, row_major> inverted_indices,
+                           batch_ann::index<IdxT, T>& index)
+{
+  size_t num_rows = dataset.extent(0);
+  size_t num_cols = dataset.extent(1);
+  size_t k        = index.k();
 
-  // const raft::comms::nccl_clique& clique = raft::resource::get_nccl_clique(handle);
+  auto cluster_data     = raft::make_host_matrix<T, int64_t, row_major>(max_cluster_size, num_cols);
+  auto global_neighbors = raft::make_managed_matrix<IdxT, int64_t>(handle, num_rows, index.k());
+  auto global_distances = raft::make_managed_matrix<float, int64_t>(handle, num_rows, index.k());
 
-  // if (clique.num_ranks_ > 1) {
-  //   std::cout << "Running multi gpu\n";
-  //   multi_gpu_batch_build(handle,
-  //                         dataset,
-  //                         global_neighbors.view(),
-  //                         global_distances.view(),
-  //                         max_cluster_size,
-  //                         min_cluster_size,
-  //                         index,
-  //                         batch_params,
-  //                         cluster_sizes.view(),
-  //                         cluster_offsets.view(),
-  //                         inverted_indices.view());
-  // } else {
-  //   std::cout << "Running single gpu\n";
-  //   std::unique_ptr<batch_ann_builder<T, IdxT>> knn_builder = get_knn_builder<T, IdxT>(
-  //     handle, batch_params, static_cast<size_t>(index.k()), min_cluster_size, max_cluster_size);
-  //   single_gpu_batch_build(handle,
-  //                          dataset,
-  //                          *knn_builder,
-  //                          global_neighbors.view(),
-  //                          global_distances.view(),
-  //                          max_cluster_size,
-  //                          n_clusters,
-  //                          index,
-  //                          batch_params,
-  //                          cluster_sizes.view(),
-  //                          cluster_offsets.view(),
-  //                          inverted_indices.view());
-  // }
+  std::fill(global_neighbors.data_handle(),
+            global_neighbors.data_handle() + num_rows * index.k(),
+            std::numeric_limits<IdxT>::max());
+  std::fill(global_distances.data_handle(),
+            global_distances.data_handle() + num_rows * index.k(),
+            std::numeric_limits<float>::max());
 
-  // raft::copy(index.graph().data_handle(),
-  //            global_neighbors.data_handle(),
-  //            num_rows * index.k(),
-  //            raft::resource::get_cuda_stream(handle));
-  // if (index.return_distances() && index.distances().has_value()) {
-  //   raft::copy(index.distances().value().data_handle(),
-  //              global_distances.data_handle(),
-  //              num_rows * index.k(),
-  //              raft::resource::get_cuda_stream(handle));
-  // }
+  std::unique_ptr<batch_ann_builder<T, IdxT>> knn_builder = get_knn_builder<T, IdxT>(
+    handle, batch_params, static_cast<size_t>(k), min_cluster_size, max_cluster_size);
+
+  knn_builder->prepare_build(dataset);
+
+  for (size_t cluster_id = 0; cluster_id < n_clusters; cluster_id++) {
+    size_t num_data_in_cluster = cluster_sizes(cluster_id);
+    size_t offset              = cluster_offsets(cluster_id);
+    if (num_data_in_cluster < static_cast<size_t>(k)) {
+      // for the unlikely event where clustering was done lopsidedly and this cluster has less than
+      // k data
+      continue;
+    }
+
+    // dathering dataset from host
+    // cluster_data is on host for now because NN Descent allocates a new device matrix for data of
+    // half fp
+#pragma omp parallel for
+    for (size_t i = 0; i < num_data_in_cluster; i++) {
+      for (size_t j = 0; j < num_cols; j++) {
+        size_t global_row  = inverted_indices(offset + i);
+        cluster_data(i, j) = dataset(global_row, j);
+      }
+    }
+
+    auto cluster_data_view = raft::make_host_matrix_view<const T, int64_t>(
+      cluster_data.data_handle(), num_data_in_cluster, num_cols);
+    auto inverted_indices_view = raft::make_host_vector_view<IdxT, int64_t>(
+      inverted_indices.data_handle() + offset, num_data_in_cluster);
+
+    auto start = raft::curTimeMillis();
+    knn_builder->build_knn(handle,
+                           batch_params,
+                           cluster_data_view,
+                           inverted_indices_view,
+                           global_neighbors.view(),
+                           global_distances.view());
+    auto end = raft::curTimeMillis();
+    std::cout << "[THREAD " << omp_get_thread_num() << "] time to build " << end - start
+              << "(num data in cluster " << num_data_in_cluster << ")" << std::endl;
+  }
+
+  raft::copy(index.graph().data_handle(),
+             global_neighbors.data_handle(),
+             num_rows * index.k(),
+             raft::resource::get_cuda_stream(handle));
+  if (index.return_distances() && index.distances().has_value()) {
+    raft::copy(index.distances().value().data_handle(),
+               global_distances.data_handle(),
+               num_rows * index.k(),
+               raft::resource::get_cuda_stream(handle));
+  }
 }
 
 template <typename T, typename IdxT = int64_t>

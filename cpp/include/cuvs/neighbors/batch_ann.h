@@ -70,7 +70,7 @@ typedef cuvsBatchANNIndex* cuvsBatchANNIndex_t;
  * @param[in] index cuvsNNDescentIndex_t to allocate
  * @return cuvsError_t
  */
-// cuvsError_t cuvsBatchANNIndexCreate(cuvsBatchANNIndex_t* index);
+cuvsError_t cuvsBatchANNIndexCreate(cuvsBatchANNIndex_t* index);
 
 /**
  * @brief De-allocate NN-Descent index
@@ -135,11 +135,20 @@ cuvsError_t cuvsBatchANNBuildClusters(cuvsResources_t res,
                                       cuvsBatchANNIndexParams_t params,
                                       DLManagedTensor* dataset_tensor,
                                       size_t k,
-                                      size_t* max_cluster_size,
-                                      size_t* min_cluster_size,
                                       DLManagedTensor* cluster_sizes,
                                       DLManagedTensor* cluster_offsets,
                                       DLManagedTensor* inverted_indices);
+
+cuvsError_t cuvsBatchANNFullSingleGPUBuild(cuvsResources_t res,
+                                           DLManagedTensor* dataset_tensor,
+                                           size_t max_cluster_size,
+                                           size_t min_cluster_size,
+                                           size_t n_clusters,
+                                           cuvsBatchANNIndexParams_t params,
+                                           DLManagedTensor* cluster_sizes,
+                                           DLManagedTensor* cluster_offsets,
+                                           DLManagedTensor* inverted_indices,
+                                           cuvsBatchANNIndex_t index);
 /**
  * @}
  */
@@ -151,7 +160,7 @@ cuvsError_t cuvsBatchANNBuildClusters(cuvsResources_t res,
  * @param[inout] graph Optional preallocated graph on host memory to store output
  * @return cuvsError_t
  */
-// cuvsError_t cuvsBatchANNIndexGetGraph(cuvsBatchANNIndex_t index, DLManagedTensor* graph);
+cuvsError_t cuvsBatchANNIndexGetGraph(cuvsBatchANNIndex_t index, DLManagedTensor* graph);
 #ifdef __cplusplus
 }
 #endif

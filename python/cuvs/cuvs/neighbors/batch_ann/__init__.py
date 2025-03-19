@@ -13,9 +13,11 @@
 # limitations under the License.
 
 
-from .batch_ann import IndexParams, build_clusters
+from .batch_ann import (
+    Index,
+    IndexParams,
+    build_clusters,
+    full_single_gpu_build,
+)
 
-__all__ = [
-    "IndexParams",
-    "build_clusters",
-]
+__all__ = ["IndexParams", "Index", "build_clusters", "full_single_gpu_build"]

@@ -39,8 +39,6 @@ void _build_clusters(cuvsResources_t res,
                      cuvsBatchANNIndexParams params,
                      DLManagedTensor* dataset_tensor,
                      size_t k,
-                     size_t& max_cluster_size,
-                     size_t& min_cluster_size,
                      DLManagedTensor* cluster_sizes,
                      DLManagedTensor* cluster_offsets,
                      DLManagedTensor* inverted_indices)
@@ -84,18 +82,78 @@ void _build_clusters(cuvsResources_t res,
                                              dataset_to_pass,
                                              build_params,
                                              k,
-                                             max_cluster_size,
-                                             min_cluster_size,
                                              cluster_sizes_mdspan,
                                              cluster_offsets_mdspan,
                                              inverted_indices_mdspan);
 }
+
+template <typename T, typename IdxT = uint32_t>
+void* _full_single_gpu_build(cuvsResources_t res,
+                             DLManagedTensor* dataset_tensor,
+                             size_t max_cluster_size,
+                             size_t min_cluster_size,
+                             size_t n_clusters,
+                             cuvsBatchANNIndexParams params,
+                             DLManagedTensor* cluster_sizes,
+                             DLManagedTensor* cluster_offsets,
+                             DLManagedTensor* inverted_indices)
+{
+  auto res_ptr = reinterpret_cast<raft::resources*>(res);
+  auto dataset = dataset_tensor->dl_tensor;
+
+  auto build_params               = cuvs::neighbors::batch_ann::index_params();
+  build_params.metric             = static_cast<cuvs::distance::DistanceType>((int)params.metric),
+  build_params.metric_arg         = params.metric_arg;
+  build_params.n_nearest_clusters = params.n_nearest_clusters;
+  build_params.n_clusters         = params.n_clusters;
+
+  switch (params.build_algo) {
+    case cuvsBatchANNGraphBuildAlgo::IVF_PQ: {
+      cuvs::neighbors::batch_ann::graph_build_params::ivf_pq_params ivf_pq_params{};
+      ivf_pq_params.build_params.n_lists =
+        std::max(5u,
+                 static_cast<uint32_t>(dataset.shape[0] * params.n_nearest_clusters /
+                                       (5000 * params.n_clusters)));
+      build_params.graph_build_params = ivf_pq_params;
+      break;
+    }
+    case cuvsBatchANNGraphBuildAlgo::NN_DESCENT: {
+      cuvs::neighbors::batch_ann::graph_build_params::nn_descent_params nn_descent_params{};
+      nn_descent_params.max_iterations            = 1000;
+      nn_descent_params.graph_degree              = params.k;
+      nn_descent_params.intermediate_graph_degree = params.k * 2;
+      build_params.graph_build_params             = nn_descent_params;
+      break;
+    }
+  };
+
+  using dataset_type           = raft::host_matrix_view<T const, int64_t, raft::row_major>;
+  auto dataset_to_pass         = cuvs::core::from_dlpack<dataset_type>(dataset_tensor);
+  using vector_type            = raft::host_vector_view<int64_t, int64_t>;
+  auto cluster_sizes_mdspan    = cuvs::core::from_dlpack<vector_type>(cluster_sizes);
+  auto cluster_offsets_mdspan  = cuvs::core::from_dlpack<vector_type>(cluster_offsets);
+  auto inverted_indices_mdspan = cuvs::core::from_dlpack<vector_type>(inverted_indices);
+
+  auto index = cuvs::neighbors::batch_ann::index<IdxT, T>(
+    *res_ptr, static_cast<int64_t>(dataset.shape[0]), static_cast<int64_t>(params.k), true);
+  cuvs::neighbors::batch_ann::full_single_gpu_build(*res_ptr,
+                                                    dataset_to_pass,
+                                                    max_cluster_size,
+                                                    min_cluster_size,
+                                                    n_clusters,
+                                                    build_params,
+                                                    cluster_sizes_mdspan,
+                                                    cluster_offsets_mdspan,
+                                                    inverted_indices_mdspan,
+                                                    index);
+  return new cuvs::neighbors::batch_ann::index<IdxT, T>(std::move(index));
+}
 }  // namespace
 
-// extern "C" cuvsError_t cuvsBatchANNIndexCreate(cuvsBatchANNIndex_t* index)
-// {
-//   return cuvs::core::translate_exceptions([=] { *index = necuvsBatchANNIndex{}; });
-// }
+extern "C" cuvsError_t cuvsBatchANNIndexCreate(cuvsBatchANNIndex_t* index)
+{
+  return cuvs::core::translate_exceptions([=] { *index = new cuvsBatchANNIndex{}; });
+}
 
 // extern "C" cuvsError_t cuvsBatchANNIndexDestroy(cuvsBatchANNIndex_t index_c_ptr)
 // {
@@ -103,7 +161,7 @@ void _build_clusters(cuvsResources_t res,
 //     auto index = *index_c_ptr;
 //     if ((index.dtype.code == kDLUInt) && (index.dtype.bits == 32)) {
 //       auto index_ptr =
-//       reinterpret_cast<cuvs::neighbors::nn_descent::index<uint32_t>*>(index.addr); delete
+//       reinterpret_cast<cuvs::neighbors::batch_ann::index<uint32_t>*>(index.addr); delete
 //       index_ptr;
 //     } else {
 //       RAFT_FAIL(
@@ -118,8 +176,6 @@ extern "C" cuvsError_t cuvsBatchANNBuildClusters(cuvsResources_t res,
                                                  cuvsBatchANNIndexParams_t params,
                                                  DLManagedTensor* dataset_tensor,
                                                  size_t k,
-                                                 size_t* max_cluster_size,
-                                                 size_t* min_cluster_size,
                                                  DLManagedTensor* cluster_sizes,
                                                  DLManagedTensor* cluster_offsets,
                                                  DLManagedTensor* inverted_indices)
@@ -133,16 +189,9 @@ extern "C" cuvsError_t cuvsBatchANNBuildClusters(cuvsResources_t res,
     if ((dtype.code == kDLFloat) && (dtype.bits == 32)) {
       // should be going in here
       // index->addr = reinterpret_cast<uintptr_t>(
-      size_t max_cluster_size, min_cluster_size;
-      _build_clusters<float, int64_t>(res,
-                                      *params,
-                                      dataset_tensor,
-                                      k,
-                                      max_cluster_size,
-                                      min_cluster_size,
-                                      cluster_sizes,
-                                      cluster_offsets,
-                                      inverted_indices);
+      // size_t max_cluster_size, min_cluster_size;
+      _build_clusters<float, int64_t>(
+        res, *params, dataset_tensor, k, cluster_sizes, cluster_offsets, inverted_indices);
       // } else if ((dtype.code == kDLFloat) && (dtype.bits == 16)) {
       //   index->addr = reinterpret_cast<uintptr_t>(
       //     _build<half, uint32_t>(res, *params, dataset_tensor, graph_tensor));
@@ -152,6 +201,40 @@ extern "C" cuvsError_t cuvsBatchANNBuildClusters(cuvsResources_t res,
       // } else if ((dtype.code == kDLUInt) && (dtype.bits == 8)) {
       //   index->addr = reinterpret_cast<uintptr_t>(
       //     _build<uint8_t, uint32_t>(res, *params, dataset_tensor, graph_tensor));
+    } else {
+      RAFT_FAIL("Unsupported batch ann dataset dtype: %d and bits: %d", dtype.code, dtype.bits);
+    }
+  });
+}
+
+extern "C" cuvsError_t cuvsBatchANNFullSingleGPUBuild(cuvsResources_t res,
+                                                      DLManagedTensor* dataset_tensor,
+                                                      size_t max_cluster_size,
+                                                      size_t min_cluster_size,
+                                                      size_t n_clusters,
+                                                      cuvsBatchANNIndexParams_t params,
+                                                      DLManagedTensor* cluster_sizes,
+                                                      DLManagedTensor* cluster_offsets,
+                                                      DLManagedTensor* inverted_indices,
+                                                      cuvsBatchANNIndex_t index)
+{
+  return cuvs::core::translate_exceptions([=] {
+    // index->dtype.code = kDLUInt;
+    // index->dtype.bits = 32;
+
+    auto dtype = dataset_tensor->dl_tensor.dtype;
+
+    if ((dtype.code == kDLFloat) && (dtype.bits == 32)) {
+      index->addr =
+        reinterpret_cast<uintptr_t>(_full_single_gpu_build<float, int64_t>(res,
+                                                                           dataset_tensor,
+                                                                           max_cluster_size,
+                                                                           min_cluster_size,
+                                                                           n_clusters,
+                                                                           *params,
+                                                                           cluster_sizes,
+                                                                           cluster_offsets,
+                                                                           inverted_indices));
     } else {
       RAFT_FAIL("Unsupported batch ann dataset dtype: %d and bits: %d", dtype.code, dtype.bits);
     }
@@ -178,23 +261,24 @@ extern "C" cuvsError_t cuvsBatchANNIndexParamsDestroy(cuvsBatchANNIndexParams_t 
   return cuvs::core::translate_exceptions([=] { delete params; });
 }
 
-// extern "C" cuvsError_t cuvsBatchANNIndexGetGraph(cuvsBatchANNIndex_t index,
-//                                                   DLManagedTensor* graph)
-// {
-//   return cuvs::core::translate_exceptions([=] {
-//     auto dtype = index->dtype;
-//     if ((dtype.code == kDLUInt) && (dtype.bits == 32)) {
-//       auto index_ptr =
-//       reinterpret_cast<cuvs::neighbors::nn_descent::index<uint32_t>*>(index->addr); using
-//       output_mdspan_type = raft::host_matrix_view<uint32_t, int64_t, raft::row_major>; auto dst
-//       = cuvs::core::from_dlpack<output_mdspan_type>(graph); auto src                 =
-//       index_ptr->graph();
+extern "C" cuvsError_t cuvsBatchANNIndexGetGraph(cuvsBatchANNIndex_t index, DLManagedTensor* graph)
+{
+  return cuvs::core::translate_exceptions([=] {
+    // auto dtype = index->dtype;
+    auto index_ptr =
+      reinterpret_cast<cuvs::neighbors::batch_ann::index<int64_t, float>*>(index->addr);
+    using output_mdspan_type = raft::host_matrix_view<int64_t, int64_t, raft::row_major>;
+    auto dst                 = cuvs::core::from_dlpack<output_mdspan_type>(graph);
+    auto src                 = index_ptr->graph();
 
-//       RAFT_EXPECTS(src.extent(0) == dst.extent(0), "Output graph has incorrect number of rows");
-//       RAFT_EXPECTS(src.extent(1) == dst.extent(1), "Output graph has incorrect number of cols");
-//       std::copy(src.data_handle(), src.data_handle() + dst.size(), dst.data_handle());
-//     } else {
-//       RAFT_FAIL("Unsupported nn-descent index dtype: %d and bits: %d", dtype.code, dtype.bits);
-//     }
-//   });
-// }
+    RAFT_EXPECTS(src.extent(0) == dst.extent(0), "Output graph has incorrect number of rows");
+    RAFT_EXPECTS(src.extent(1) == dst.extent(1), "Output graph has incorrect number of cols");
+    std::copy(src.data_handle(), src.data_handle() + dst.size(), dst.data_handle());
+
+    //   auto dist_dst  = cuvs::core::from_dlpack<output_mdspan_type>(distances);
+    // auto dist_src   = index_ptr->distances();
+
+    //   std::copy(dist_src.data_handle(), dist_src.data_handle() + dist_dst.size(),
+    //   dist_dst.data_handle());
+  });
+}
