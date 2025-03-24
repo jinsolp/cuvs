@@ -47,10 +47,10 @@ using namespace cuvs::neighbors;
 //
 // Run balanced kmeans on a subsample of the dataset to get centroids
 //
-template <typename T, typename IdxT = int64_t>
+template <typename T, typename IdxT>
 void get_centroids_on_data_subsample(raft::resources const& res,
                                      cuvs::distance::DistanceType metric,
-                                     raft::host_matrix_view<const T, int64_t, row_major> dataset,
+                                     raft::host_matrix_view<const T, IdxT, row_major> dataset,
                                      raft::device_matrix_view<T, IdxT> centroids)
 {
   size_t num_rows       = static_cast<size_t>(dataset.extent(0));
@@ -62,9 +62,9 @@ void get_centroids_on_data_subsample(raft::resources const& res,
       1000) {  // heuristically running kmeans for something this small doesn't work well
     num_subsamples = std::min(num_rows, 5000lu);
   }
-  auto dataset_subsample_d = raft::make_device_matrix<T, int64_t>(res, num_subsamples, num_cols);
+  auto dataset_subsample_d = raft::make_device_matrix<T, IdxT>(res, num_subsamples, num_cols);
 
-  raft::matrix::sample_rows<T, int64_t>(
+  raft::matrix::sample_rows<T, IdxT>(
     res, raft::random::RngState{0}, dataset, dataset_subsample_d.view());
   cuvs::cluster::kmeans::balanced_params kmeans_params;
   kmeans_params.metric = metric;
@@ -77,15 +77,14 @@ void get_centroids_on_data_subsample(raft::resources const& res,
 // Get the top k closest centroid indices for each data point
 // Loads the data in batches onto device for efficiency
 //
-template <typename T, typename IdxT = int64_t>
-void get_global_nearest_clusters(
-  raft::resources const& res,
-  size_t num_nearest_clusters,
-  size_t n_clusters,
-  raft::host_matrix_view<const T, int64_t, row_major> dataset,
-  raft::host_matrix_view<IdxT, IdxT, raft::row_major> global_nearest_cluster,
-  raft::device_matrix_view<T, IdxT, raft::row_major> centroids,
-  cuvs::distance::DistanceType metric)
+template <typename T, typename IdxT>
+void assign_clusters(raft::resources const& res,
+                     size_t num_nearest_clusters,
+                     size_t n_clusters,
+                     raft::host_matrix_view<const T, IdxT, row_major> dataset,
+                     raft::host_matrix_view<IdxT, IdxT, raft::row_major> global_nearest_cluster,
+                     raft::device_matrix_view<T, IdxT, raft::row_major> centroids,
+                     cuvs::distance::DistanceType metric)
 {
   size_t num_rows     = static_cast<size_t>(dataset.extent(0));
   size_t num_cols     = static_cast<size_t>(dataset.extent(1));
@@ -95,7 +94,7 @@ void get_global_nearest_clusters(
   size_t n_rows_per_batch = (num_rows + n_clusters) / n_clusters;
 
   auto dataset_batch_d =
-    raft::make_device_matrix<T, int64_t, raft::row_major>(res, n_rows_per_batch, num_cols);
+    raft::make_device_matrix<T, IdxT, raft::row_major>(res, n_rows_per_batch, num_cols);
 
   // this is needed because brute force search only takes int64_t type
   auto nearest_clusters_idx_int64_d = raft::make_device_matrix<int64_t, int64_t, raft::row_major>(
@@ -224,10 +223,10 @@ std::unique_ptr<batch_ann_builder<T, IdxT>> get_knn_builder(const raft::resource
 
 template <typename T, typename IdxT>
 void single_gpu_batch_build(const raft::resources& handle,
-                            raft::host_matrix_view<const T, int64_t, row_major> dataset,
+                            raft::host_matrix_view<const T, IdxT, row_major> dataset,
                             detail::batch_ann_builder<T, IdxT>& knn_builder,
-                            raft::managed_matrix_view<IdxT, int64_t> global_neighbors,
-                            raft::managed_matrix_view<T, int64_t> global_distances,
+                            raft::managed_matrix_view<IdxT, IdxT> global_neighbors,
+                            raft::managed_matrix_view<T, IdxT> global_distances,
                             size_t max_cluster_size,
                             size_t n_clusters,
                             batch_ann::index<IdxT, T>& index,
@@ -239,7 +238,7 @@ void single_gpu_batch_build(const raft::resources& handle,
   size_t num_rows = dataset.extent(0);
   size_t num_cols = dataset.extent(1);
 
-  auto cluster_data = raft::make_host_matrix<T, int64_t, row_major>(max_cluster_size, num_cols);
+  auto cluster_data = raft::make_host_matrix<T, IdxT, row_major>(max_cluster_size, num_cols);
 
   // using statistics_adaptor =
   // rmm::mr::statistics_resource_adaptor<rmm::mr::device_memory_resource>; statistics_adaptor
@@ -274,9 +273,9 @@ void single_gpu_batch_build(const raft::resources& handle,
       }
     }
 
-    auto cluster_data_view = raft::make_host_matrix_view<const T, int64_t>(
+    auto cluster_data_view = raft::make_host_matrix_view<const T, IdxT>(
       cluster_data.data_handle(), num_data_in_cluster, num_cols);
-    auto inverted_indices_view = raft::make_host_vector_view<IdxT, int64_t>(
+    auto inverted_indices_view = raft::make_host_vector_view<IdxT, IdxT>(
       inverted_indices.data_handle() + offset, num_data_in_cluster);
 
     auto start = raft::curTimeMillis();
@@ -297,9 +296,9 @@ void single_gpu_batch_build(const raft::resources& handle,
 
 template <typename T, typename IdxT>
 void multi_gpu_batch_build(const raft::resources& handle,
-                           raft::host_matrix_view<const T, int64_t, row_major> dataset,
-                           raft::managed_matrix_view<IdxT, int64_t> global_neighbors,
-                           raft::managed_matrix_view<T, int64_t> global_distances,
+                           raft::host_matrix_view<const T, IdxT, row_major> dataset,
+                           raft::managed_matrix_view<IdxT, IdxT> global_neighbors,
+                           raft::managed_matrix_view<T, IdxT> global_distances,
                            size_t max_cluster_size,
                            size_t min_cluster_size,
                            batch_ann::index<IdxT, T>& index,
@@ -368,10 +367,11 @@ void multi_gpu_batch_build(const raft::resources& handle,
 
 template <typename T, typename IdxT>
 void build(const raft::resources& handle,
-           raft::host_matrix_view<const T, int64_t, row_major> dataset,
+           raft::host_matrix_view<const T, IdxT, row_major> dataset,
            const index_params& batch_params,
            batch_ann::index<IdxT, T>& index)
 {
+  // TODO add data support only float warning
   auto start      = raft::curTimeMillis();
   size_t num_rows = static_cast<size_t>(dataset.extent(0));
   size_t num_cols = static_cast<size_t>(dataset.extent(1));
@@ -379,18 +379,17 @@ void build(const raft::resources& handle,
   size_t n_nearest_clusters = batch_params.n_nearest_clusters;
   size_t n_clusters         = batch_params.n_clusters;
 
-  auto centroids = raft::make_device_matrix<T, IdxT, raft::row_major>(handle, n_clusters, num_cols);
+  auto centroids = raft::make_device_matrix<T, IdxT>(handle, n_clusters, num_cols);
   get_centroids_on_data_subsample<T, IdxT>(handle, batch_params.metric, dataset, centroids.view());
   std::cout << "get centroids on data subsample\n";
-  auto global_nearest_cluster =
-    raft::make_host_matrix<IdxT, IdxT, raft::row_major>(num_rows, n_nearest_clusters);
-  get_global_nearest_clusters<T, IdxT>(handle,
-                                       n_nearest_clusters,
-                                       n_clusters,
-                                       dataset,
-                                       global_nearest_cluster.view(),
-                                       centroids.view(),
-                                       batch_params.metric);
+  auto global_nearest_cluster = raft::make_host_matrix<IdxT, IdxT>(num_rows, n_nearest_clusters);
+  assign_clusters<T, IdxT>(handle,
+                           n_nearest_clusters,
+                           n_clusters,
+                           dataset,
+                           global_nearest_cluster.view(),
+                           centroids.view(),
+                           batch_params.metric);
   std::cout << "get global nearest clusters\n";
   auto inverted_indices =
     raft::make_host_vector<IdxT, IdxT, raft::row_major>(num_rows * n_nearest_clusters);
@@ -408,8 +407,8 @@ void build(const raft::resources& handle,
                        cluster_sizes.view(),
                        cluster_offsets.view());
   raft::print_host_vector("cluster sizes", cluster_sizes.data_handle(), n_clusters, std::cout);
-  auto global_neighbors = raft::make_managed_matrix<IdxT, int64_t>(handle, num_rows, index.k());
-  auto global_distances = raft::make_managed_matrix<float, int64_t>(handle, num_rows, index.k());
+  auto global_neighbors = raft::make_managed_matrix<IdxT, IdxT>(handle, num_rows, index.k());
+  auto global_distances = raft::make_managed_matrix<float, IdxT>(handle, num_rows, index.k());
 
   std::fill(global_neighbors.data_handle(),
             global_neighbors.data_handle() + num_rows * index.k(),
@@ -465,137 +464,16 @@ void build(const raft::resources& handle,
   }
 }
 
-template <typename T, typename IdxT>
-void build_clusters(const raft::resources& handle,
-                    raft::host_matrix_view<const T, int64_t, row_major> dataset,
-                    const index_params& batch_params,
-                    int64_t k,
-                    raft::host_vector_view<IdxT, IdxT, row_major> cluster_sizes,
-                    raft::host_vector_view<IdxT, IdxT, row_major> cluster_offsets,
-                    raft::host_vector_view<IdxT, IdxT, row_major> inverted_indices)
-{
-  size_t num_rows = static_cast<size_t>(dataset.extent(0));
-  size_t num_cols = static_cast<size_t>(dataset.extent(1));
-
-  size_t n_nearest_clusters = batch_params.n_nearest_clusters;
-  size_t n_clusters         = batch_params.n_clusters;
-
-  auto centroids = raft::make_device_matrix<T, IdxT, raft::row_major>(handle, n_clusters, num_cols);
-  get_centroids_on_data_subsample<T, IdxT>(handle, batch_params.metric, dataset, centroids.view());
-
-  auto global_nearest_cluster =
-    raft::make_host_matrix<IdxT, IdxT, raft::row_major>(num_rows, n_nearest_clusters);
-  get_global_nearest_clusters<T, IdxT>(handle,
-                                       n_nearest_clusters,
-                                       n_clusters,
-                                       dataset,
-                                       global_nearest_cluster.view(),
-                                       centroids.view(),
-                                       batch_params.metric);
-
-  size_t max_cluster_size, min_cluster_size;
-  get_inverted_indices(handle,
-                       n_clusters,
-                       k,
-                       max_cluster_size,
-                       min_cluster_size,
-                       global_nearest_cluster.view(),
-                       inverted_indices,
-                       cluster_sizes,
-                       cluster_offsets);
-  raft::print_host_vector(
-    "cluster sizes in build_clusters function", cluster_sizes.data_handle(), n_clusters, std::cout);
-}
-
-template <typename T, typename IdxT>
-void full_single_gpu_build(const raft::resources& handle,
-                           raft::host_matrix_view<const T, int64_t, row_major> dataset,
-                           size_t max_cluster_size,
-                           size_t min_cluster_size,
-                           size_t n_clusters,
-                           const index_params& batch_params,
-                           raft::host_vector_view<IdxT, IdxT, row_major> cluster_sizes,
-                           raft::host_vector_view<IdxT, IdxT, row_major> cluster_offsets,
-                           raft::host_vector_view<IdxT, IdxT, row_major> inverted_indices,
-                           batch_ann::index<IdxT, T>& index)
-{
-  size_t num_rows = dataset.extent(0);
-  size_t num_cols = dataset.extent(1);
-  size_t k        = index.k();
-
-  auto cluster_data     = raft::make_host_matrix<T, int64_t, row_major>(max_cluster_size, num_cols);
-  auto global_neighbors = raft::make_managed_matrix<IdxT, int64_t>(handle, num_rows, index.k());
-  auto global_distances = raft::make_managed_matrix<float, int64_t>(handle, num_rows, index.k());
-
-  std::fill(global_neighbors.data_handle(),
-            global_neighbors.data_handle() + num_rows * index.k(),
-            std::numeric_limits<IdxT>::max());
-  std::fill(global_distances.data_handle(),
-            global_distances.data_handle() + num_rows * index.k(),
-            std::numeric_limits<float>::max());
-
-  std::unique_ptr<batch_ann_builder<T, IdxT>> knn_builder = get_knn_builder<T, IdxT>(
-    handle, batch_params, static_cast<size_t>(k), min_cluster_size, max_cluster_size);
-
-  knn_builder->prepare_build(dataset);
-
-  for (size_t cluster_id = 0; cluster_id < n_clusters; cluster_id++) {
-    size_t num_data_in_cluster = cluster_sizes(cluster_id);
-    size_t offset              = cluster_offsets(cluster_id);
-    if (num_data_in_cluster < static_cast<size_t>(k)) {
-      // for the unlikely event where clustering was done lopsidedly and this cluster has less than
-      // k data
-      continue;
-    }
-
-    // dathering dataset from host
-    // cluster_data is on host for now because NN Descent allocates a new device matrix for data of
-    // half fp
-#pragma omp parallel for
-    for (size_t i = 0; i < num_data_in_cluster; i++) {
-      for (size_t j = 0; j < num_cols; j++) {
-        size_t global_row  = inverted_indices(offset + i);
-        cluster_data(i, j) = dataset(global_row, j);
-      }
-    }
-
-    auto cluster_data_view = raft::make_host_matrix_view<const T, int64_t>(
-      cluster_data.data_handle(), num_data_in_cluster, num_cols);
-    auto inverted_indices_view = raft::make_host_vector_view<IdxT, int64_t>(
-      inverted_indices.data_handle() + offset, num_data_in_cluster);
-
-    auto start = raft::curTimeMillis();
-    knn_builder->build_knn(handle,
-                           batch_params,
-                           cluster_data_view,
-                           inverted_indices_view,
-                           global_neighbors.view(),
-                           global_distances.view());
-    auto end = raft::curTimeMillis();
-    std::cout << "[THREAD " << omp_get_thread_num() << "] time to build " << end - start
-              << "(num data in cluster " << num_data_in_cluster << ")" << std::endl;
-  }
-
-  raft::copy(index.graph().data_handle(),
-             global_neighbors.data_handle(),
-             num_rows * index.k(),
-             raft::resource::get_cuda_stream(handle));
-  if (index.return_distances() && index.distances().has_value()) {
-    raft::copy(index.distances().value().data_handle(),
-               global_distances.data_handle(),
-               num_rows * index.k(),
-               raft::resource::get_cuda_stream(handle));
-  }
-}
-
 template <typename T, typename IdxT = int64_t>
 batch_ann::index<IdxT, T> build(const raft::resources& handle,
-                                raft::host_matrix_view<const T, int64_t, row_major> dataset,
+                                raft::host_matrix_view<const T, IdxT, row_major> dataset,
                                 int64_t k,
                                 const index_params& batch_params,
                                 bool return_distances = false)  // distance type same as data type
 {
-  batch_ann::index<IdxT, T> index{handle, dataset.extent(0), k, return_distances};
+  // TODO add data support only float warning
+  batch_ann::index<IdxT, T> index{
+    handle, static_cast<int64_t>(dataset.extent(0)), k, return_distances};
   build(handle, dataset, batch_params, index);
   return index;
 }
