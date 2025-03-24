@@ -54,7 +54,7 @@
 namespace cuvs::neighbors::batch_ann {
 
 enum knn_build_algo { NN_DESCENT, IVF_PQ };
-enum data_gen { NORMAL, BLOBS, SIFT, GIST, OPENAI5M, DEEP, SIFT_MMAP };
+enum data_gen { NORMAL, BLOBS, SIFT, GIST, OPENAI5M, DEEP, SIFT_MMAP, DEEP_MMAP, WIKI_MMAP, WIKI };
 
 struct BatchANNInputs {
   data_gen data_gen_algo;
@@ -129,7 +129,7 @@ inline std::string format_filename_indices(int num_data, int k, int dim, data_ge
        << ".bin";
   } else if (data_gen_algo == OPENAI5M) {
     ss << "OPENAI5M_indices_naive_" << num_data << "_" << k << "_" << dim << ".bin";
-  } else if (data_gen_algo == DEEP) {
+  } else if (data_gen_algo == DEEP || DEEP_MMAP) {
     ss << "/home/coder/data/deep_image/DEEP_indices_naive_" << num_data << "_" << k << "_" << dim
        << ".bin";
   }
@@ -151,7 +151,7 @@ inline std::string format_filename_distances(int num_data, int k, int dim, data_
        << ".bin";
   } else if (data_gen_algo == OPENAI5M) {
     ss << "OPENAI5M_distances_naive_" << num_data << "_" << k << "_" << dim << ".bin";
-  } else if (data_gen_algo == DEEP) {
+  } else if (data_gen_algo == DEEP || DEEP_MMAP) {
     ss << "/home/coder/data/deep_image/DEEP_distances_naive_" << num_data << "_" << k << "_" << dim
        << ".bin";
   }
@@ -195,46 +195,50 @@ class BatchANNTest : public ::testing::TestWithParam<BatchANNInputs> {
                 << std::endl;
     }
 
-    size_t queries_size = ps.n_rows * ps.k;
-    std::cout << "queries size: " << queries_size << std::endl;
+    size_t queries_size = static_cast<size_t>(ps.n_rows) * static_cast<size_t>(ps.k);
+    std::cout << "queries size: " << queries_size << " k is: " << ps.k
+              << " n rows is: " << ps.n_rows << std::endl;
 
     std::vector<IdxT> indices_batch(queries_size);
     std::vector<DistanceT> distances_batch(queries_size);
-    // std::vector<DistanceT> distances_naive(queries_size);
-    // std::vector<IdxT> indices_naive(queries_size);
-    std::vector<IdxT> indices_naive = read_vector_from_file<IdxT>(
-      format_filename_indices(ps.n_rows, ps.k, ps.dim, ps.data_gen_algo));
-    std::vector<DistanceT> distances_naive = read_vector_from_file<DistanceT>(
-      format_filename_distances(ps.n_rows, ps.k, ps.dim, ps.data_gen_algo));
+    std::vector<DistanceT> distances_naive;
+    std::vector<IdxT> indices_naive;
 
-    // {
-    //   rmm::device_uvector<DistanceT> distances_naive_dev(queries_size, stream_);
-    //   rmm::device_uvector<IdxT> indices_naive_dev(queries_size, stream_);
-    //   std::cout << "rows: " << ps.n_rows << ", dims: " << ps.dim << std::endl;
-    //   auto start = raft::curTimeMillis();
-    //   naive_knn<DistanceT, DataT, IdxT>(handle_,
-    //                                     distances_naive_dev.data(),
-    //                                     indices_naive_dev.data(),
-    //                                     database.data(),
-    //                                     database.data(),
-    //                                     ps.n_rows,
-    //                                     ps.n_rows,
-    //                                     ps.dim,
-    //                                     ps.k,
-    //                                     ps.metric);
-    //   auto end = raft::curTimeMillis();
-    //   std::cout << "time to run naive build: " << end - start << std::endl;
-    //   raft::update_host(indices_naive.data(), indices_naive_dev.data(), queries_size, stream_);
-    //   raft::update_host(distances_naive.data(), distances_naive_dev.data(), queries_size,
-    //   stream_);
+    if (ps.data_gen_algo != WIKI_MMAP || ps.data_gen_algo != WIKI) {
+      indices_naive = read_vector_from_file<IdxT>(
+        format_filename_indices(ps.n_rows, ps.k, ps.dim, ps.data_gen_algo));
+      distances_naive = read_vector_from_file<DistanceT>(
+        format_filename_distances(ps.n_rows, ps.k, ps.dim, ps.data_gen_algo));
 
-    //   write_vector_to_file(indices_naive, format_filename_indices(ps.n_rows, ps.k, ps.dim,
-    //   ps.data_gen_algo)); write_vector_to_file(distances_naive,
-    //   format_filename_distances(ps.n_rows, ps.k, ps.dim, ps.data_gen_algo));
-    //   raft::resource::sync_stream(handle_);
-    //   std::cout << "done writing indices and distances\n";
-    // }
-    std::cout << "done reading naive indices and distances\n";
+      // {
+      //   rmm::device_uvector<DistanceT> distances_naive_dev(queries_size, stream_);
+      //   rmm::device_uvector<IdxT> indices_naive_dev(queries_size, stream_);
+      //   std::cout << "rows: " << ps.n_rows << ", dims: " << ps.dim << std::endl;
+      //   auto start = raft::curTimeMillis();
+      //   naive_knn<DistanceT, DataT, IdxT>(handle_,
+      //                                     distances_naive_dev.data(),
+      //                                     indices_naive_dev.data(),
+      //                                     database.data(),
+      //                                     database.data(),
+      //                                     ps.n_rows,
+      //                                     ps.n_rows,
+      //                                     ps.dim,
+      //                                     ps.k,
+      //                                     ps.metric);
+      //   auto end = raft::curTimeMillis();
+      //   std::cout << "time to run naive build: " << end - start << std::endl;
+      //   raft::update_host(indices_naive.data(), indices_naive_dev.data(), queries_size, stream_);
+      //   raft::update_host(distances_naive.data(), distances_naive_dev.data(), queries_size,
+      //   stream_);
+
+      //   write_vector_to_file(indices_naive, format_filename_indices(ps.n_rows, ps.k, ps.dim,
+      //   ps.data_gen_algo)); write_vector_to_file(distances_naive,
+      //   format_filename_distances(ps.n_rows, ps.k, ps.dim, ps.data_gen_algo));
+      //   raft::resource::sync_stream(handle_);
+      //   std::cout << "done writing indices and distances\n";
+      // }
+      std::cout << "done reading naive indices and distances\n";
+    }
     {
       {
         {
@@ -243,7 +247,8 @@ class BatchANNTest : public ::testing::TestWithParam<BatchANNInputs> {
           // raft::copy(database_host.data_handle(), database.data(), database.size(), stream_);
           uint32_t start, end;
 
-          if (ps.data_gen_algo == SIFT_MMAP) {
+          if (ps.data_gen_algo == SIFT_MMAP || ps.data_gen_algo == DEEP_MMAP ||
+              ps.data_gen_algo == WIKI_MMAP) {
             std::cout << "mmap batch build\n";
             auto database_host_view =
               raft::make_host_matrix_view<DataT, int64_t>(database_h_mmap_ptr, ps.n_rows, ps.dim);
@@ -286,10 +291,13 @@ class BatchANNTest : public ::testing::TestWithParam<BatchANNInputs> {
         }
         raft::resource::sync_stream(handle_);
       }
-      double min_recall = std::get<0>(ps.recall_cluster_nearestcluster);
 
-      EXPECT_TRUE(
-        eval_recall(indices_naive, indices_batch, ps.n_rows, ps.k, 0.01, min_recall, true));
+      if (ps.data_gen_algo != WIKI_MMAP || ps.data_gen_algo != WIKI) {
+        double min_recall = std::get<0>(ps.recall_cluster_nearestcluster);
+
+        EXPECT_TRUE(
+          eval_recall(indices_naive, indices_batch, ps.n_rows, ps.k, 0.01, min_recall, true));
+      }
     }
   }
 
@@ -501,6 +509,98 @@ class BatchANNTest : public ::testing::TestWithParam<BatchANNInputs> {
           reinterpret_cast<DataT*>(static_cast<char*>(mapped_memory) + 2 * sizeof(uint32_t));
         ps.n_rows = n_samples;
         ps.dim    = n_features;
+      } else if (ps.data_gen_algo == DEEP_MMAP) {
+        std::string input_bin_file = "/home/coder/data/deep_image/deep-image-96-angular.fbin";
+        // Open the file
+        int fd = open(input_bin_file.c_str(), O_RDONLY);
+
+        // Get the size of the file
+        struct stat file_stat;
+        fstat(fd, &file_stat);
+
+        size_t file_size       = file_stat.st_size;
+        std::size_t num_floats = file_size / sizeof(float);
+        std::cout << "num floats: " << num_floats << std::endl;
+
+        // Memory-map the file
+        void* mapped_memory = mmap(nullptr, file_size, PROT_READ, MAP_SHARED, fd, 0);
+
+        // Close the file descriptor, as we no longer need it
+        close(fd);
+
+        // Access the data
+        uint32_t n_samples  = *reinterpret_cast<uint32_t*>(mapped_memory);
+        uint32_t n_features = *(reinterpret_cast<uint32_t*>(mapped_memory) + 1);
+
+        std::cout << "DEEP MMAP Number of samples: " << n_samples << std::endl;
+        std::cout << "DEEP MMAP Number of features: " << n_features << std::endl;
+
+        // If you want to access the rest of the data (as floats)
+        database_h_mmap_ptr =
+          reinterpret_cast<DataT*>(static_cast<char*>(mapped_memory) + 2 * sizeof(uint32_t));
+        ps.n_rows = n_samples;
+        ps.dim    = n_features;
+      } else if (ps.data_gen_algo == WIKI) {
+        const std::string input_bin_file = "/home/coder/data/wiki_all/base.88M.fbin";
+        std::ifstream file(input_bin_file, std::ios::binary);
+
+        file.seekg(0, std::ios::end);              // Move to the end of the file
+        std::streamsize file_size = file.tellg();  // Get the size
+        file.seekg(0, std::ios::beg);              // Move back to the beginning
+        std::cout << "file size: " << file_size << std::endl;
+        std::size_t num_floats =
+          file_size / sizeof(float);  // Assuming the file contains only floats
+        std::cout << "num floats: " << num_floats << std::endl;
+
+        uint32_t n_samples  = 0;
+        uint32_t n_features = 0;
+        // Read the first 8 bytes (4 bytes for n_samples, 4 bytes for n_features)
+        file.read(reinterpret_cast<char*>(&n_samples), sizeof(n_samples));
+        file.read(reinterpret_cast<char*>(&n_features), sizeof(n_features));
+        std::cout << "WIKI Number of samples: " << n_samples << std::endl;
+        std::cout << "WIKI Number of features: " << n_features << std::endl;
+
+        database_h.emplace(raft::make_host_matrix<DataT, int64_t>(
+          n_samples, n_features));  // resize(n_samples * n_features);
+        file.read(reinterpret_cast<char*>(database_h.value().data_handle()),
+                  n_samples * n_features * sizeof(float));
+
+        ps.n_rows = n_samples;
+        ps.dim    = n_features;
+
+        // raft::copy(database.data(), database_h.value().data_handle(), ps.n_rows * ps.dim,
+        // raft::resource::get_cuda_stream(handle_));
+      } else if (ps.data_gen_algo == WIKI_MMAP) {
+        std::string input_bin_file = "/home/coder/data/wiki_all/base.88M.fbin";
+        // Open the file
+        int fd = open(input_bin_file.c_str(), O_RDONLY);
+
+        // Get the size of the file
+        struct stat file_stat;
+        fstat(fd, &file_stat);
+
+        size_t file_size       = file_stat.st_size;
+        std::size_t num_floats = file_size / sizeof(float);
+        std::cout << "num floats: " << num_floats << std::endl;
+
+        // Memory-map the file
+        void* mapped_memory = mmap(nullptr, file_size, PROT_READ, MAP_SHARED, fd, 0);
+
+        // Close the file descriptor, as we no longer need it
+        close(fd);
+
+        // Access the data
+        uint32_t n_samples  = *reinterpret_cast<uint32_t*>(mapped_memory);
+        uint32_t n_features = *(reinterpret_cast<uint32_t*>(mapped_memory) + 1);
+
+        std::cout << "WIKI MMAP Number of samples: " << n_samples << std::endl;
+        std::cout << "WIKI MMAP Number of features: " << n_features << std::endl;
+
+        // If you want to access the rest of the data (as floats)
+        database_h_mmap_ptr =
+          reinterpret_cast<DataT*>(static_cast<char*>(mapped_memory) + 2 * sizeof(uint32_t));
+        ps.n_rows = n_samples;
+        ps.dim    = n_features;
       }
     } else {
       raft::random::uniformInt(
@@ -527,18 +627,41 @@ class BatchANNTest : public ::testing::TestWithParam<BatchANNInputs> {
   DataT* database_h_mmap_ptr;
 };
 
+// const std::vector<BatchANNInputs> inputsBatch = raft::util::itertools::product<BatchANNInputs>(
+//   {SIFT, DEEP, SIFT_MMAP},
+//   // {DEEP},
+//   {NN_DESCENT, IVF_PQ},
+//   // {IVF_PQ},
+//   // {std::make_tuple(1.0, 1lu, 1lu)},  // min_recall, n_clusters, num_nearest_cluster
+//   {
+//     std::make_tuple(1.0, 1lu, 1lu),
+//     std::make_tuple(1.0, 4lu, 2lu),
+//     std::make_tuple(1.0, 10lu, 2lu),
+//     std::make_tuple(1.0, 20lu, 2lu),
+//     std::make_tuple(1.0, 40lu, 4lu)
+//     // ,
+//     // std::make_tuple(1.0, 10lu, 2lu),
+//     // std::make_tuple(1.0, 1lu, 1lu)
+//   },        // min_recall, n_clusters, num_nearest_cluster
+//   {10000},  // n_rows
+//   {128},    // dim
+//   {32},     // graph_degree
+//   {cuvs::distance::DistanceType::L2Expanded});
+
 const std::vector<BatchANNInputs> inputsBatch = raft::util::itertools::product<BatchANNInputs>(
-  {SIFT, DEEP, SIFT_MMAP},
+  {WIKI},
   // {DEEP},
-  {NN_DESCENT, IVF_PQ},
-  // {IVF_PQ},
+  // { NN_DESCENT},
+  {IVF_PQ, NN_DESCENT},
   // {std::make_tuple(1.0, 1lu, 1lu)},  // min_recall, n_clusters, num_nearest_cluster
   {
-    std::make_tuple(1.0, 1lu, 1lu),
-    std::make_tuple(1.0, 4lu, 2lu),
-    std::make_tuple(1.0, 10lu, 2lu),
-    std::make_tuple(1.0, 20lu, 2lu),
-    std::make_tuple(1.0, 40lu, 4lu)
+    // std::make_tuple(2.0, 1lu, 1lu),
+    // std::make_tuple(2.0, 4lu, 2lu),
+    // std::make_tuple(2.0, 8lu, 2lu),
+    std::make_tuple(2.0, 10lu, 2lu),
+    std::make_tuple(2.0, 20lu, 2lu),
+    std::make_tuple(2.0, 24lu, 2lu),
+    std::make_tuple(2.0, 40lu, 4lu)
     // ,
     // std::make_tuple(1.0, 10lu, 2lu),
     // std::make_tuple(1.0, 1lu, 1lu)

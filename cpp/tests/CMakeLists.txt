@@ -87,11 +87,114 @@ function(ConfigureTest)
   )
 endfunction()
 
+function(ConfigureTestNotGtest)
+
+  set(options OPTIONAL NOCUDA C_LIB)
+  set(oneValueArgs NAME GPUS PERCENT ADDITIONAL_DEP)
+  set(multiValueArgs PATH TARGETS CONFIGURATIONS)
+
+  cmake_parse_arguments(_CUVS_TEST "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
+  if(NOT DEFINED _CUVS_TEST_GPUS AND NOT DEFINED _CUVS_TEST_PERCENT)
+    set(_CUVS_TEST_GPUS 1)
+    set(_CUVS_TEST_PERCENT 30)
+  endif()
+  if(NOT DEFINED _CUVS_TEST_GPUS)
+    set(_CUVS_TEST_GPUS 1)
+  endif()
+  if(NOT DEFINED _CUVS_TEST_PERCENT)
+    set(_CUVS_TEST_PERCENT 100)
+  endif()
+
+  if(_CUVS_TEST_NOCUDA)
+    set(TEST_NAME "${_CUVS_TEST_NAME}_NOCUDA")
+  else()
+    set(TEST_NAME ${_CUVS_TEST_NAME})
+  endif()
+
+  add_executable(${TEST_NAME} ${_CUVS_TEST_PATH})
+  target_link_libraries(
+    ${TEST_NAME}
+    PRIVATE cuvs
+            cuvs::cuvs
+            raft::raft
+            Threads::Threads
+            ${CUVS_CTK_MATH_DEPENDENCIES}
+            $<TARGET_NAME_IF_EXISTS:OpenMP::OpenMP_CXX>
+            $<TARGET_NAME_IF_EXISTS:conda_env>
+            $<$<BOOL:${_CUVS_TEST_C_LIB}>:cuvs::c_api>
+            ${_CUVS_TEST_ADDITIONAL_DEP}
+  )
+  set_target_properties(
+    ${TEST_NAME}
+    PROPERTIES RUNTIME_OUTPUT_DIRECTORY "$<BUILD_INTERFACE:${CUVS_BINARY_DIR}/gtests>"
+               INSTALL_RPATH "\$ORIGIN/../../../lib"
+               CXX_STANDARD 17
+               CXX_STANDARD_REQUIRED ON
+               CUDA_STANDARD 17
+               CUDA_STANDARD_REQUIRED ON
+  )
+  target_compile_options(
+    ${TEST_NAME} PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:${CUVS_CXX_FLAGS}>"
+                         "$<$<COMPILE_LANGUAGE:CUDA>:${CUVS_CUDA_FLAGS}>"
+  )
+
+  if(_CUVS_TEST_NOCUDA)
+    target_compile_definitions(${TEST_NAME} PRIVATE "CUVS_DISABLE_CUDA")
+  endif()
+
+  target_include_directories(${TEST_NAME} PUBLIC "$<BUILD_INTERFACE:${CUVS_SOURCE_DIR}/tests>")
+
+  rapids_test_add(
+    NAME ${TEST_NAME}
+    COMMAND ${TEST_NAME}
+    GPUS ${_CUVS_TEST_GPUS}
+    PERCENT ${_CUVS_TEST_PERCENT}
+    INSTALL_COMPONENT_SET testing
+  )
+endfunction()
+
 # ##################################################################################################
 # test sources ##################################################################################
 # ##################################################################################################
 
 if(BUILD_TESTS)
+  # # Configure the JINSOLP_NEIGHBORS_BATCH_ANN_TEST without Google Test
+  # add_executable(JINSOLP_NEIGHBORS_BATCH_ANN_TEST
+  # neighbors/batch_ann/jinsolp_test_batch.cu
+  # )
+
+  # # Link necessary libraries for the executable
+  # target_link_libraries(
+  # JINSOLP_NEIGHBORS_BATCH_ANN_TEST
+  # PRIVATE cuvs
+  #         cuvs::cuvs
+  #         raft::raft
+  #         Threads::Threads
+  #         ${CUVS_CTK_MATH_DEPENDENCIES}
+  #         $<TARGET_NAME_IF_EXISTS:OpenMP::OpenMP_CXX>
+  #         $<TARGET_NAME_IF_EXISTS:conda_env>
+  #         ${_CUVS_TEST_ADDITIONAL_DEP}
+  #         nccl  # Add nccl if needed
+  # )
+
+  # # Set the necessary properties for this executable
+  # set_target_properties(
+  # JINSOLP_NEIGHBORS_BATCH_ANN_TEST
+  # PROPERTIES RUNTIME_OUTPUT_DIRECTORY "$<BUILD_INTERFACE:${CUVS_BINARY_DIR}/gtests>"
+  #           INSTALL_RPATH "\$ORIGIN/../../../lib"
+  #           CXX_STANDARD 17
+  #           CXX_STANDARD_REQUIRED ON
+  #           CUDA_STANDARD 17
+  #           CUDA_STANDARD_REQUIRED ON
+  # )
+
+  # # Apply any CUDA-specific compile flags
+  # target_compile_options(
+  # JINSOLP_NEIGHBORS_BATCH_ANN_TEST
+  # PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:${CUVS_CXX_FLAGS}>"
+  #         "$<$<COMPILE_LANGUAGE:CUDA>:${CUVS_CUDA_FLAGS}>"
+  # )
+
   ConfigureTest(
     NAME NEIGHBORS_TEST PATH neighbors/brute_force.cu neighbors/brute_force_prefiltered.cu
     neighbors/sparse_brute_force.cu neighbors/refine.cu GPUS 1 PERCENT 100
@@ -189,6 +292,18 @@ if(BUILD_TESTS)
     NEIGHBORS_BATCH_ANN_TEST
     PATH
     neighbors/batch_ann/test_float.cu
+    GPUS
+    1
+    PERCENT
+    100
+    ADDITIONAL_DEP nccl
+  )
+
+  ConfigureTestNotGtest(
+    NAME
+    JINSOLP_NEIGHBORS_BATCH_ANN_TEST
+    PATH
+    neighbors/batch_ann/jinsolp_test_batch.cu
     GPUS
     1
     PERCENT

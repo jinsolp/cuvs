@@ -27,6 +27,7 @@
 #include <raft/core/host_mdspan.hpp>
 #include <raft/core/managed_mdarray.hpp>
 #include <raft/core/resource/nccl_clique.hpp>
+#include <rmm/mr/device/statistics_resource_adaptor.hpp>
 
 #include <cuvs/cluster/kmeans.hpp>
 #include <raft/core/managed_mdspan.hpp>
@@ -105,6 +106,7 @@ void get_global_nearest_clusters(
     res, n_rows_per_batch, num_nearest_clusters);
 
   for (size_t i = 0; i < num_batches; i++) {
+    std::cout << "\t[assigning clusters] batch " << i << " out of " << num_batches << std::endl;
     size_t row_offset              = n_rows_per_batch * i;
     size_t n_rows_of_current_batch = std::min(n_rows_per_batch, num_rows - row_offset);
     raft::copy(dataset_batch_d.data_handle(),
@@ -239,7 +241,16 @@ void single_gpu_batch_build(const raft::resources& handle,
 
   auto cluster_data = raft::make_host_matrix<T, int64_t, row_major>(max_cluster_size, num_cols);
 
+  // using statistics_adaptor =
+  // rmm::mr::statistics_resource_adaptor<rmm::mr::device_memory_resource>; statistics_adaptor
+  // mr{rmm::mr::get_current_device_resource()}; rmm::mr::set_current_device_resource(&mr); auto
+  // [bytes, allocs] = mr.push_counters(); std::cout << "tmp cntrs here should be 0 " << bytes.value
+  // << std::endl;
+
   knn_builder.prepare_build(dataset);
+  // auto cntr = mr.get_bytes_counter();
+  // std::cout << "[MEM PROFILE] after prepare build, value " << cntr.value << " peak " << cntr.peak
+  // << " total " << cntr.total << std::endl;
 
   raft::print_host_vector("cluster sizes", cluster_sizes.data_handle(), n_clusters, std::cout);
 
@@ -276,6 +287,9 @@ void single_gpu_batch_build(const raft::resources& handle,
                           global_neighbors,
                           global_distances);
     auto end = raft::curTimeMillis();
+    // cntr = mr.get_bytes_counter();
+    // std::cout << "[MEM PROFILE] after iteration " << cluster_id << ", value " << cntr.value << "
+    // peak " << cntr.peak << " total " << cntr.total << std::endl;
     std::cout << "[THREAD " << omp_get_thread_num() << "] time to build " << end - start
               << "(num data in cluster " << num_data_in_cluster << ")" << std::endl;
   }
@@ -336,7 +350,7 @@ void multi_gpu_batch_build(const raft::resources& handle,
     auto cluster_offsets_for_this_rank = raft::make_host_vector_view<IdxT, IdxT>(
       cluster_offsets.data_handle() + base_cluster_idx, num_clusters_for_this_rank);
     auto inverted_indices_for_this_rank = raft::make_host_vector_view<IdxT, IdxT>(
-      inverted_indices.data_handle() + rank_offset, num_clusters_for_this_rank);
+      inverted_indices.data_handle() + rank_offset, num_data_for_this_rank);
     single_gpu_batch_build(dev_res,
                            dataset,
                            *knn_builder,
@@ -358,6 +372,7 @@ void build(const raft::resources& handle,
            const index_params& batch_params,
            batch_ann::index<IdxT, T>& index)
 {
+  auto start      = raft::curTimeMillis();
   size_t num_rows = static_cast<size_t>(dataset.extent(0));
   size_t num_cols = static_cast<size_t>(dataset.extent(1));
 
@@ -366,7 +381,7 @@ void build(const raft::resources& handle,
 
   auto centroids = raft::make_device_matrix<T, IdxT, raft::row_major>(handle, n_clusters, num_cols);
   get_centroids_on_data_subsample<T, IdxT>(handle, batch_params.metric, dataset, centroids.view());
-
+  std::cout << "get centroids on data subsample\n";
   auto global_nearest_cluster =
     raft::make_host_matrix<IdxT, IdxT, raft::row_major>(num_rows, n_nearest_clusters);
   get_global_nearest_clusters<T, IdxT>(handle,
@@ -376,7 +391,7 @@ void build(const raft::resources& handle,
                                        global_nearest_cluster.view(),
                                        centroids.view(),
                                        batch_params.metric);
-
+  std::cout << "get global nearest clusters\n";
   auto inverted_indices =
     raft::make_host_vector<IdxT, IdxT, raft::row_major>(num_rows * n_nearest_clusters);
   auto cluster_sizes   = raft::make_host_vector<IdxT, IdxT, raft::row_major>(n_clusters);
@@ -403,6 +418,8 @@ void build(const raft::resources& handle,
             global_distances.data_handle() + num_rows * index.k(),
             std::numeric_limits<float>::max());
 
+  auto end = raft::curTimeMillis();
+  std::cout << "time to preprocess and get clusters " << end - start << std::endl;
   const raft::comms::nccl_clique& clique = raft::resource::get_nccl_clique(handle);
 
   if (clique.num_ranks_ > 1) {

@@ -20,6 +20,7 @@
 #include "cuvs/neighbors/ivf_pq.hpp"
 #include "cuvs/neighbors/nn_descent.hpp"
 #include "cuvs/neighbors/refine.hpp"
+#include <rmm/mr/device/statistics_resource_adaptor.hpp>
 //  #include "raft/core/handle.hpp"
 //  #include <cstddef>
 //  #include <cuda.h>
@@ -358,15 +359,32 @@ struct batch_ann_builder_ivfpq : public batch_ann_builder<T, IdxT> {
     candidate_k     = std::min<IdxT>(
       std::max(static_cast<size_t>(this->k * all_ivf_pq_params.refinement_rate), this->k),
       this->min_cluster_size);
+    // std::cout << "candidate k here: " << candidate_k << std::endl;
+
+    // using statistics_adaptor =
+    // rmm::mr::statistics_resource_adaptor<rmm::mr::device_memory_resource>; statistics_adaptor
+    // mr{rmm::mr::get_current_device_resource()}; rmm::mr::set_current_device_resource(&mr); auto
+    // [bytes, allocs] = mr.push_counters(); std::cout << "tmp cntrs here should be 0 " <<
+    // bytes.value << std::endl;
 
     data_d.emplace(
       raft::make_device_matrix<T, int64_t, row_major>(this->res, this->max_cluster_size, num_cols));
-
-    // for searching with a larger k (candidate_k)
+    // std::cout << "allocated data d max cluster size: " << this->max_cluster_size << " num cols "
+    // << num_cols << std::endl; auto cntr = mr.get_bytes_counter(); std::cout << "[MEM PROFILE]
+    // after prepare build, value " << cntr.value << " peak " << cntr.peak << " total " <<
+    // cntr.total << std::endl; for searching with a larger k (candidate_k)
     distances_candidate_d.emplace(raft::make_device_matrix<T, int64_t, row_major>(
       this->res, this->max_cluster_size, candidate_k));
+    // std::cout << "allocated distances_candidate_d"  << std::endl;
+    // cntr = mr.get_bytes_counter();
+    // std::cout << "[MEM PROFILE] after prepare build, value " << cntr.value << " peak " <<
+    // cntr.peak << " total " << cntr.total << std::endl;
     neighbors_candidate_d.emplace(raft::make_device_matrix<IdxT, int64_t, row_major>(
       this->res, this->max_cluster_size, candidate_k));
+    // std::cout << "allocated neighbors_candidate_d"  << std::endl;
+    // cntr = mr.get_bytes_counter();
+    // std::cout << "[MEM PROFILE] after prepare build, value " << cntr.value << " peak " <<
+    // cntr.peak << " total " << cntr.total << std::endl;
     neighbors_candidate_h.emplace(
       raft::make_host_matrix<IdxT, int64_t, row_major>(this->max_cluster_size, candidate_k));
 
@@ -398,7 +416,7 @@ struct batch_ann_builder_ivfpq : public batch_ann_builder<T, IdxT> {
       data_d.value().data_handle(), num_data_in_cluster, num_cols);
 
     auto index = ivf_pq::build(this->res, all_ivf_pq_params.build_params, data_view);
-
+    // std::cout << "build done\n";
     auto distances_candidate_view = raft::make_device_matrix_view<T, int64_t>(
       distances_candidate_d.value().data_handle(), num_data_in_cluster, candidate_k);
     auto neighbors_candidate_view = raft::make_device_matrix_view<IdxT, int64_t>(
@@ -409,13 +427,13 @@ struct batch_ann_builder_ivfpq : public batch_ann_builder<T, IdxT> {
                                     data_view,
                                     neighbors_candidate_view,
                                     distances_candidate_view);
-
+    // std::cout << "search done\n";
     // copy resulting candidates to host memory for use with host refine
     raft::copy(neighbors_candidate_h.value().data_handle(),
                neighbors_candidate_view.data_handle(),
                num_data_in_cluster * candidate_k,
                raft::resource::get_cuda_stream(this->res));
-
+    //  std::cout << "copy done\n";
     auto neighbors_candidate_h_view = raft::make_host_matrix_view<IdxT, int64_t>(
       neighbors_candidate_h.value().data_handle(), num_data_in_cluster, candidate_k);
     auto refined_distances_h_view = raft::make_host_matrix_view<T, int64_t>(
@@ -429,12 +447,12 @@ struct batch_ann_builder_ivfpq : public batch_ann_builder<T, IdxT> {
            refined_neighbors_h_view,
            refined_distances_h_view,
            params.metric);
-
+    //  std::cout << "refine done\n";
     raft::copy(this->batch_distances_d.data_handle(),
                refined_distances_h_view.data_handle(),
                num_data_in_cluster * this->k,
                raft::resource::get_cuda_stream(this->res));
-
+    //  std::cout << "second copy done\n";
     remap_and_merge_subgraphs<T, IdxT, IdxT>(this->res,
                                              this->inverted_indices_d.view(),
                                              inverted_indices,
@@ -446,6 +464,7 @@ struct batch_ann_builder_ivfpq : public batch_ann_builder<T, IdxT> {
                                              global_distances,
                                              num_data_in_cluster,
                                              this->k);
+    //  std::cout << "remap done\n";
   }
 
   batch_ann::graph_build_params::ivf_pq_params all_ivf_pq_params;
