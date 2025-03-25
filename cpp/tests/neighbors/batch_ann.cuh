@@ -251,7 +251,7 @@ class BatchANNTest : public ::testing::TestWithParam<BatchANNInputs> {
               ps.data_gen_algo == WIKI_MMAP) {
             std::cout << "mmap batch build\n";
             auto database_host_view =
-              raft::make_host_matrix_view<DataT, int64_t>(database_h_mmap_ptr, ps.n_rows, ps.dim);
+              raft::make_host_matrix_view<DataT, IdxT>(database_h_mmap_ptr, ps.n_rows, ps.dim);
             start      = raft::curTimeMillis();
             auto index = batch_ann::build(handle_,
                                           raft::make_const_mdspan(database_host_view),
@@ -267,7 +267,7 @@ class BatchANNTest : public ::testing::TestWithParam<BatchANNInputs> {
             }
           } else {
             std::cout << "NON-mmap batch build\n";
-            auto database_host_view = raft::make_host_matrix_view<DataT, int64_t>(
+            auto database_host_view = raft::make_host_matrix_view<DataT, IdxT>(
               database_h.value().data_handle(), ps.n_rows, ps.dim);
 
             start      = raft::curTimeMillis();

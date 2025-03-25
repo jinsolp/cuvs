@@ -27,9 +27,9 @@ namespace cuvs::neighbors::batch_ann {
                                   bool return_distances)                                    \
   {                                                                                         \
     return batch_ann::detail::build<T, IdxT>(handle, dataset, k, params, return_distances); \
-  }                                                                                         \
-                                                                                            \
-  CUVS_INST_BATCH_KNN(float, int64_t);
+  }
+
+CUVS_INST_BATCH_KNN(float, int64_t);
 
 #undef CUVS_INST_BATCH_KNN
 
