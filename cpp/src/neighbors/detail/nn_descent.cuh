@@ -1207,6 +1207,7 @@ GNND<Data_t, Index_t>::GNND(raft::resources const& res, const BuildConfig& build
     d_list_sizes_old_{raft::make_device_vector<int2, size_t>(res, nrow_)}
 {
   static_assert(NUM_SAMPLES <= 32);
+  std::cout << "node degree: " << build_config.node_degree << " internal node degree: " <<  build_config.internal_node_degree << " max data size " << build_config.max_dataset_size << " termination_threshold " << build_config.termination_threshold << " max_iterations " << build_config.max_iterations  << " output_graph_degree " << build_config.output_graph_degree << std::endl;
 
   raft::matrix::fill(res, dists_buffer_.view(), std::numeric_limits<float>::max());
   auto graph_buffer_view = raft::make_device_matrix_view<Index_t, int64_t>(

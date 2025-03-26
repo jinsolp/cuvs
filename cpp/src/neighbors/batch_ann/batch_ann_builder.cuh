@@ -550,11 +550,15 @@ struct batch_ann_builder_nn_descent : public batch_ann_builder<T, IdxT> {
   {
     size_t num_data_in_cluster = dataset.extent(0);
     bool return_distances      = true;
+
+    auto start_actual_build = raft::curTimeMillis();
     nnd_builder.value().build(dataset.data_handle(),
                               static_cast<int>(num_data_in_cluster),
                               int_graph.value().data_handle(),
                               return_distances,
                               this->batch_distances_d.data_handle());
+    auto end_actual_build = raft::curTimeMillis();
+    std::cout << "\ttime to actually call nnd build(): " << end_actual_build - start_actual_build << std::endl;
 
     remap_and_merge_subgraphs<T, IdxT, int>(res,
                                             this->inverted_indices_d.view(),

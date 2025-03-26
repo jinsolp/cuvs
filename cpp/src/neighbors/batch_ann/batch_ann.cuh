@@ -246,6 +246,7 @@ void single_gpu_batch_build(const raft::resources& handle,
   // mr{rmm::mr::get_current_device_resource()}; rmm::mr::set_current_device_resource(&mr); auto
   // [bytes, allocs] = mr.push_counters(); std::cout << "tmp cntrs here should be 0 " << bytes.value
   // << std::endl;
+  std::cout<< "[THREAD " << omp_get_thread_num() << "] Maximum number of OpenMP threads: " << omp_get_max_threads() << std::endl;
 
   knn_builder.prepare_build(dataset);
   // auto cntr = mr.get_bytes_counter();
@@ -290,7 +291,9 @@ void single_gpu_batch_build(const raft::resources& handle,
     // cntr = mr.get_bytes_counter();
     // std::cout << "[MEM PROFILE] after iteration " << cluster_id << ", value " << cntr.value << "
     // peak " << cntr.peak << " total " << cntr.total << std::endl;
-    std::cout << "[THREAD " << omp_get_thread_num() << "] time to build " << end - start
+    int device_id;
+    cudaGetDevice(&device_id); // Get the current device ID
+    std::cout << "[THREAD " << omp_get_thread_num() << " running on GPU " << device_id << "] time to build " << end - start
               << "(num data in cluster " << num_data_in_cluster << ")" << std::endl;
   }
 }
@@ -519,6 +522,7 @@ void full_single_gpu_build(const raft::resources& handle,
                            raft::host_vector_view<IdxT, IdxT, row_major> inverted_indices,
                            batch_ann::index<IdxT, T>& index)
 {
+  std::cout<< "[THREAD " << omp_get_thread_num() << "] Maximum number of OpenMP threads: " << omp_get_max_threads() << std::endl;
   size_t num_rows = dataset.extent(0);
   size_t num_cols = dataset.extent(1);
   size_t k        = index.k();
@@ -539,6 +543,7 @@ void full_single_gpu_build(const raft::resources& handle,
 
   knn_builder->prepare_build(dataset);
 
+  
   for (size_t cluster_id = 0; cluster_id < n_clusters; cluster_id++) {
     size_t num_data_in_cluster = cluster_sizes(cluster_id);
     size_t offset              = cluster_offsets(cluster_id);
@@ -572,7 +577,11 @@ void full_single_gpu_build(const raft::resources& handle,
                            global_neighbors.view(),
                            global_distances.view());
     auto end = raft::curTimeMillis();
-    std::cout << "[THREAD " << omp_get_thread_num() << "] time to build " << end - start
+
+    int device_id;
+    cudaGetDevice(&device_id); // Get the current device ID
+
+    std::cout << "[THREAD " << omp_get_thread_num() << " running on GPU " << device_id << "] time to build " << end - start
               << "(num data in cluster " << num_data_in_cluster << ")" << std::endl;
   }
 

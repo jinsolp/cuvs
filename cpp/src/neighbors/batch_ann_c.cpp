@@ -148,6 +148,31 @@ void* _full_single_gpu_build(cuvsResources_t res,
                                                     index);
   return new cuvs::neighbors::batch_ann::index<IdxT, T>(std::move(index));
 }
+
+// template <typename T, typename IdxT = uint32_t>
+// void* _full_single_gpu_build(cuvsResources_t res,
+//                              DLManagedTensor* dataset_tensor,
+//                              size_t max_cluster_size,
+//                              size_t min_cluster_size,
+//                              size_t n_clusters,
+//                              cuvsBatchANNIndexParams params,
+//                              DLManagedTensor* cluster_sizes,
+//                              DLManagedTensor* cluster_offsets,
+//                              DLManagedTensor* inverted_indices)
+// {
+//   auto res_ptr = reinterpret_cast<raft::resources*>(res);
+//   using vector_type            = raft::host_vector_view<int64_t, int64_t>;
+//   auto cluster_sizes_mdspan    = cuvs::core::from_dlpack<vector_type>(cluster_sizes);
+//   auto dataset = dataset_tensor->dl_tensor;
+
+//   for (size_t i=0; i < n_clusters; i++) {
+//     std::cout << "cluster size " << cluster_sizes_mdspan(i) << std::endl;
+//     sleep(2);
+//   }
+  
+//   return new cuvs::neighbors::batch_ann::index<IdxT, T>(*res_ptr, dataset.shape[0], params.k);
+// }
+
 }  // namespace
 
 extern "C" cuvsError_t cuvsBatchANNIndexCreate(cuvsBatchANNIndex_t* index)

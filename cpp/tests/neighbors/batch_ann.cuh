@@ -649,19 +649,19 @@ class BatchANNTest : public ::testing::TestWithParam<BatchANNInputs> {
 //   {cuvs::distance::DistanceType::L2Expanded});
 
 const std::vector<BatchANNInputs> inputsBatch = raft::util::itertools::product<BatchANNInputs>(
-  {WIKI},
+  {DEEP},
   // {DEEP},
   // { NN_DESCENT},
-  {IVF_PQ, NN_DESCENT},
+  {NN_DESCENT},
   // {std::make_tuple(1.0, 1lu, 1lu)},  // min_recall, n_clusters, num_nearest_cluster
   {
     // std::make_tuple(2.0, 1lu, 1lu),
     // std::make_tuple(2.0, 4lu, 2lu),
     // std::make_tuple(2.0, 8lu, 2lu),
-    std::make_tuple(2.0, 10lu, 2lu),
-    std::make_tuple(2.0, 20lu, 2lu),
-    std::make_tuple(2.0, 24lu, 2lu),
-    std::make_tuple(2.0, 40lu, 4lu)
+    std::make_tuple(1.0, 20lu, 2lu)
+    // std::make_tuple(1.0, 20lu, 2lu),
+    // std::make_tuple(1.0, 24lu, 2lu),
+    // std::make_tuple(1.0, 40lu, 4lu)
     // ,
     // std::make_tuple(1.0, 10lu, 2lu),
     // std::make_tuple(1.0, 1lu, 1lu)

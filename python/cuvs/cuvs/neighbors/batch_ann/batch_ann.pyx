@@ -320,6 +320,7 @@ def full_single_gpu_build(IndexParams index_params,
                           inverted_indices,
                           resources=None):
 
+    print("started running and we are here11")
     dataset_ai = wrap_array(dataset)
     _check_input_array(dataset_ai, [np.dtype('float32'), np.dtype('byte'),
                                     np.dtype('ubyte')])
@@ -343,7 +344,7 @@ def full_single_gpu_build(IndexParams index_params,
 
     inverted_indices_ai = wrap_array(inverted_indices)
     inverted_indices_dlpack = cydlpack.dlpack_c(inverted_indices_ai)
-
+    print("started running and we are here")
     cdef Index idx = Index(num_rows=dataset_ai.shape[0], k=params.k)
     with cuda_interruptible():
         check_cuvs(cuvsBatchANNFullSingleGPUBuild(
