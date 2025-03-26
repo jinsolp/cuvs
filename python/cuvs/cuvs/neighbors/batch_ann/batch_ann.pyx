@@ -47,11 +47,73 @@ from libc.stdint cimport (
 from cuvs.common.exceptions import check_cuvs
 
 
+# cdef class IndexParams:
+#     """
+#     Parameters to build NN-Descent Index
+
+
+#     """
+
+#     cdef cuvsBatchANNIndexParams* params
+#     cdef object _metric
+
+#     def __cinit__(self):
+#         cuvsBatchANNIndexParamsCreate(&self.params)
+
+#     def __dealloc__(self):
+#         check_cuvs(cuvsBatchANNIndexParamsDestroy(self.params))
+
+#     def __init__(self, *,
+#                  metric="sqeuclidean",
+#                  build_algo="ivf_pq",
+#                  n_nearest_clusters=2,
+#                  n_clusters=4,
+#                  k=32):
+#         self._metric = metric
+#         self.params.metric = <cuvsDistanceType>DISTANCE_TYPES[metric]
+#         self.params.n_nearest_clusters = n_nearest_clusters
+#         self.params.n_clusters = n_clusters
+#         self.params.k = k
+
+#         # setting this parameter to true will cause an exception in the c++
+#         # api (`Using return_distances set to true requires distance view to
+#         # be allocated.`) - so instead force to be false here
+#         # self.params.return_distances = False
+
+#     @property
+#     def metric(self):
+#         return DISTANCE_NAMES[self.params.metric]
+
+#     @property
+#     def n_clusters(self):
+#         return self.params.n_clusters
+
+#     # === Add These Methods for Pickling ===
+#     def __reduce__(self):
+#         """Define how to serialize the object for pickling."""
+#         return (self.__class__, (), self.__getstate__())
+
+#     def __getstate__(self):
+#         """Return a dictionary of all serializable attributes."""
+#         return {
+#             "metric": self._metric,
+#             "n_nearest_clusters": self.params.n_nearest_clusters,
+#             "n_clusters": self.params.n_clusters,
+#             "k": self.params.k
+#         }
+
+#     def __setstate__(self, state):
+#         """Restore the object from the serialized state."""
+#         self._metric = state["metric"]
+#         self.params.metric = <cuvsDistanceType>DISTANCE_TYPES[state["metric"]]
+#         self.params.n_nearest_clusters = state["n_nearest_clusters"]
+#         self.params.n_clusters = state["n_clusters"]
+#         self.params.k = state["k"]
+
+
 cdef class IndexParams:
     """
     Parameters to build NN-Descent Index
-
-
     """
 
     cdef cuvsBatchANNIndexParams* params
@@ -61,7 +123,8 @@ cdef class IndexParams:
         cuvsBatchANNIndexParamsCreate(&self.params)
 
     def __dealloc__(self):
-        check_cuvs(cuvsBatchANNIndexParamsDestroy(self.params))
+        if self.params is not NULL:
+            check_cuvs(cuvsBatchANNIndexParamsDestroy(self.params))
 
     def __init__(self, *,
                  metric="sqeuclidean",
@@ -71,14 +134,10 @@ cdef class IndexParams:
                  k=32):
         self._metric = metric
         self.params.metric = <cuvsDistanceType>DISTANCE_TYPES[metric]
+        self.params.build_algo = <cuvsBatchANNGraphBuildAlgo>(IVF_PQ if build_algo == "ivf_pq" else NN_DESCENT)
         self.params.n_nearest_clusters = n_nearest_clusters
         self.params.n_clusters = n_clusters
         self.params.k = k
-
-        # setting this parameter to true will cause an exception in the c++
-        # api (`Using return_distances set to true requires distance view to
-        # be allocated.`) - so instead force to be false here
-        # self.params.return_distances = False
 
     @property
     def metric(self):
@@ -88,6 +147,32 @@ cdef class IndexParams:
     def n_clusters(self):
         return self.params.n_clusters
 
+    # === Methods for Pickling ===
+    def __reduce__(self):
+        """Define how to serialize the object for pickling."""
+        return (self.__class__, (), self.__getstate__())
+
+    def __getstate__(self):
+        """Extract only serializable attributes into a dictionary."""
+        return {
+            "metric": self._metric,
+            "build_algo": "ivf_pq" if self.params.build_algo == IVF_PQ else "nn_descent",
+            "n_nearest_clusters": self.params.n_nearest_clusters,
+            "n_clusters": self.params.n_clusters,
+            "k": self.params.k
+        }
+
+    def __setstate__(self, state):
+        """Restore the object from the serialized state."""
+        cuvsBatchANNIndexParamsCreate(&self.params)  # Recreate the C struct
+
+        self._metric = state["metric"]
+        self.params.metric = <cuvsDistanceType>DISTANCE_TYPES[state["metric"]]
+        self.params.build_algo = <cuvsBatchANNGraphBuildAlgo>(IVF_PQ if state["build_algo"] == "ivf_pq" else NN_DESCENT)
+        self.params.n_nearest_clusters = state["n_nearest_clusters"]
+        self.params.n_clusters = state["n_clusters"]
+        self.params.k = state["k"]
+    
 cdef class Index:
     """
     NN-Descent index object. This object stores the trained NN-Descent index,
@@ -131,6 +216,51 @@ cdef class Index:
 
     def __repr__(self):
         return "Index(type=BatchANN)"
+    
+     # Custom serialization: __getstate__ method
+    def __getstate__(self):
+        """
+        Return the state of the object for serialization. Exclude non-writable attributes
+        like the 'graph' property and only serialize the necessary attributes.
+        """
+        state = {
+            'num_rows': self.num_rows,
+            'k': self.k,
+        }
+        
+        # Serialize the graph data (if necessary)
+        graph_data = self.graph  # Extract the graph's data for serialization
+        state['graph_data'] = graph_data
+
+        return state
+
+    # Custom deserialization: __setstate__ method
+    def __setstate__(self, state):
+        """
+        Restore the state of the object after deserialization.
+        Recreate the index and graph data if necessary.
+        """
+        self.num_rows = state['num_rows']
+        self.k = state['k']
+        
+        # Recreate the index object
+        check_cuvs(cuvsBatchANNIndexCreate(&self.index))
+
+        # Restore the graph data (if necessary)
+        if 'graph_data' in state:
+            graph_data = state['graph_data']
+            # Rebuild the graph (if needed) using the graph data
+            # You would need to implement how to restore the graph from the data here
+            pass  # Replace with code to restore the graph, if needed
+
+    # Additional method to handle graph restoration (if required)
+    def restore_graph(self, graph_data):
+        """
+        Helper method to restore the graph after deserialization.
+        """
+        # Here you can implement how to restore the graph from graph_data
+        # For example, you might use graph_data to reassign or rebuild the graph
+        pass
 
 
 @auto_sync_resources
