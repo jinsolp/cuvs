@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2024, NVIDIA CORPORATION.
+ * Copyright (c) 2023-2025, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,7 +21,7 @@
 
 namespace cuvs::neighbors::cagra::detail::single_cta_search {
 
-template <typename DataT, typename IndexT, typename DistanceT, typename SampleFilterT>
+template <typename DataT, typename IndexT, typename DistanceT>
 void select_and_run(const dataset_descriptor_host<DataT, IndexT, DistanceT>& dataset_desc,
                     raft::device_matrix_view<const IndexT, int64_t, raft::row_major> graph,
                     uintptr_t topk_indices_ptr,     // [num_queries, topk]
@@ -40,7 +40,7 @@ void select_and_run(const dataset_descriptor_host<DataT, IndexT, DistanceT>& dat
                     size_t small_hash_bitlen,
                     size_t small_hash_reset_interval,
                     uint32_t num_seeds,
-                    SampleFilterT sample_filter,
+                    cuvs::neighbors::cagra::detail::cagra_filter_dev sample_filter,
                     cudaStream_t stream);
 
 }

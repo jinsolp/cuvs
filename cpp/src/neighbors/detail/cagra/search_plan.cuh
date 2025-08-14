@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2024, NVIDIA CORPORATION.
+ * Copyright (c) 2023-2025, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -133,11 +133,7 @@ struct search_plan_impl_base : public search_params {
   }
 };
 
-template <typename DataT,
-          typename IndexT,
-          typename DistanceT,
-          typename SAMPLE_FILTER_T,
-          typename OutputIndexT = IndexT>
+template <typename DataT, typename IndexT, typename DistanceT, typename OutputIndexT = IndexT>
 struct search_plan_impl : public search_plan_impl_base {
   using DATA_T     = DataT;
   using INDEX_T    = IndexT;
@@ -153,6 +149,8 @@ struct search_plan_impl : public search_plan_impl_base {
   uint32_t smem_size;
   uint32_t num_seeds;
 
+  filtering::FilterType filter_tag;
+
   lightweight_uvector<INDEX_T> hashmap;
   lightweight_uvector<uint32_t> num_executed_iterations;  // device or managed?
   lightweight_uvector<INDEX_T> dev_seed;
@@ -164,13 +162,15 @@ struct search_plan_impl : public search_plan_impl_base {
                    int64_t dim,
                    int64_t dataset_size,
                    int64_t graph_degree,
-                   uint32_t topk)
+                   uint32_t topk,
+                   filtering::FilterType filter_tag)
     : search_plan_impl_base(params, dim, dataset_size, graph_degree, topk),
       hashmap(res),
       num_executed_iterations(res),
       dev_seed(res),
       num_seeds(0),
-      dataset_desc(dataset_desc)
+      dataset_desc(dataset_desc),
+      filter_tag(filter_tag)
   {
     adjust_search_params();
     check_params();
@@ -192,7 +192,7 @@ struct search_plan_impl : public search_plan_impl_base {
                           const INDEX_T* dev_seed_ptr,                   // [num_queries, num_seeds]
                           std::uint32_t* const num_executed_iterations,  // [num_queries]
                           uint32_t topk,
-                          SAMPLE_FILTER_T sample_filter) {};
+                          cagra_filter_dev sample_filter) {};
 
   void adjust_search_params()
   {
@@ -405,8 +405,9 @@ struct search_plan_impl : public search_plan_impl_base {
         "`hashmap_max_fill_rate` must be equal to or greater than 0.1 and smaller than 0.9. " +
         std::to_string(hashmap_max_fill_rate) + " has been given.";
     }
-    if constexpr (!std::is_same<SAMPLE_FILTER_T,
-                                cuvs::neighbors::filtering::none_sample_filter>::value) {
+    // if constexpr (!std::is_same<SAMPLE_FILTER_T,
+    //                             cuvs::neighbors::filtering::none_sample_filter>::value) {
+    if (filter_tag != filtering::FilterType::None) {
       if (hashmap_mode == hash_mode::SMALL) {
         error_message += "`SMALL` hash is not available when filtering";
       } else {

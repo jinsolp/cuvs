@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2024, NVIDIA CORPORATION.
+ * Copyright (c) 2023-2025, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
  */
 #pragma once
 
+#include "sample_filter_utils.cuh"
 #include "search_single_cta_kernel.cuh"
 
 #include "bitonic.hpp"
@@ -547,8 +548,7 @@ RAFT_DEVICE_INLINE_FUNCTION void hashmap_restore(INDEX_T* const hashmap_ptr,
 template <unsigned MAX_ITOPK,
           unsigned MAX_CANDIDATES,
           unsigned TOPK_BY_BITONIC_SORT,
-          class DATASET_DESCRIPTOR_T,
-          class SAMPLE_FILTER_T>
+          class DATASET_DESCRIPTOR_T>
 __device__ void search_core(
   uintptr_t result_indices_ptr,                                           // [num_queries, top_k]
   typename DATASET_DESCRIPTOR_T::DISTANCE_T* const result_distances_ptr,  // [num_queries, top_k]
@@ -572,7 +572,7 @@ __device__ void search_core(
   const std::uint32_t small_hash_bitlen,
   const std::uint32_t small_hash_reset_interval,
   const std::uint32_t query_id,
-  SAMPLE_FILTER_T sample_filter)
+  cagra_filter_dev sample_filter)
 {
   using LOAD_T = device::LOAD_128BIT_T;
 
@@ -704,8 +704,7 @@ __device__ void search_core(
 
       // topk with bitonic sort
       _CLK_START();
-      if (!(std::is_same<SAMPLE_FILTER_T, cuvs::neighbors::filtering::none_sample_filter>::value ||
-            *filter_flag == 0)) {
+      if (sample_filter.tag_ != filtering::FilterType::None || *filter_flag == 0) {
         // Move the filtered out index to the end of the itopk list
         for (unsigned i = 0; i < search_width; i++) {
           move_invalid_to_end_of_list(
@@ -793,8 +792,7 @@ __device__ void search_core(
     _CLK_REC(clk_compute_distance);
 
     // Filtering
-    if constexpr (!std::is_same<SAMPLE_FILTER_T,
-                                cuvs::neighbors::filtering::none_sample_filter>::value) {
+    if (sample_filter.tag_ != filtering::FilterType::None) {
       if (threadIdx.x == 0) { *filter_flag = 0; }
       __syncthreads();
 
@@ -819,8 +817,7 @@ __device__ void search_core(
   }
 
   // Post process for filtering
-  if constexpr (!std::is_same<SAMPLE_FILTER_T,
-                              cuvs::neighbors::filtering::none_sample_filter>::value) {
+  if (sample_filter.tag_ != filtering::FilterType::None) {
     constexpr INDEX_T index_msb_1_mask = utils::gen_index_msb_1_mask<INDEX_T>::value;
     const INDEX_T invalid_index        = utils::get_max_value<INDEX_T>();
 
@@ -964,8 +961,7 @@ __device__ void search_core(
 template <unsigned MAX_ITOPK,
           unsigned MAX_CANDIDATES,
           unsigned TOPK_BY_BITONIC_SORT,
-          class DATASET_DESCRIPTOR_T,
-          class SAMPLE_FILTER_T>
+          class DATASET_DESCRIPTOR_T>
 RAFT_KERNEL __launch_bounds__(1024, 1) search_kernel(
   uintptr_t result_indices_ptr,                                           // [num_queries, top_k]
   typename DATASET_DESCRIPTOR_T::DISTANCE_T* const result_distances_ptr,  // [num_queries, top_k]
@@ -988,35 +984,32 @@ RAFT_KERNEL __launch_bounds__(1024, 1) search_kernel(
   const std::uint32_t hash_bitlen,
   const std::uint32_t small_hash_bitlen,
   const std::uint32_t small_hash_reset_interval,
-  SAMPLE_FILTER_T sample_filter)
+  cagra_filter_dev sample_filter)
 {
   const auto query_id = blockIdx.y;
-  search_core<MAX_ITOPK,
-              MAX_CANDIDATES,
-              TOPK_BY_BITONIC_SORT,
-              DATASET_DESCRIPTOR_T,
-              SAMPLE_FILTER_T>(result_indices_ptr,
-                               result_distances_ptr,
-                               top_k,
-                               dataset_desc,
-                               queries_ptr,
-                               knn_graph,
-                               graph_degree,
-                               num_distilation,
-                               rand_xor_mask,
-                               seed_ptr,
-                               num_seeds,
-                               visited_hashmap_ptr,
-                               internal_topk,
-                               search_width,
-                               min_iteration,
-                               max_iteration,
-                               num_executed_iterations,
-                               hash_bitlen,
-                               small_hash_bitlen,
-                               small_hash_reset_interval,
-                               query_id,
-                               sample_filter);
+  search_core<MAX_ITOPK, MAX_CANDIDATES, TOPK_BY_BITONIC_SORT, DATASET_DESCRIPTOR_T>(
+    result_indices_ptr,
+    result_distances_ptr,
+    top_k,
+    dataset_desc,
+    queries_ptr,
+    knn_graph,
+    graph_degree,
+    num_distilation,
+    rand_xor_mask,
+    seed_ptr,
+    num_seeds,
+    visited_hashmap_ptr,
+    internal_topk,
+    search_width,
+    min_iteration,
+    max_iteration,
+    num_executed_iterations,
+    hash_bitlen,
+    small_hash_bitlen,
+    small_hash_reset_interval,
+    query_id,
+    sample_filter);
 }
 
 // To make sure we avoid false sharing on both CPU and GPU, we enforce cache line size to the
@@ -1081,8 +1074,7 @@ constexpr auto is_worker_busy(worker_handle_t::handle_t h) -> bool
 template <unsigned MAX_ITOPK,
           unsigned MAX_CANDIDATES,
           unsigned TOPK_BY_BITONIC_SORT,
-          class DATASET_DESCRIPTOR_T,
-          class SAMPLE_FILTER_T>
+          class DATASET_DESCRIPTOR_T>
 RAFT_KERNEL __launch_bounds__(1024, 1) search_kernel_p(
   const DATASET_DESCRIPTOR_T* dataset_desc,
   worker_handle_t* worker_handles,
@@ -1104,7 +1096,7 @@ RAFT_KERNEL __launch_bounds__(1024, 1) search_kernel_p(
   const std::uint32_t hash_bitlen,
   const std::uint32_t small_hash_bitlen,
   const std::uint32_t small_hash_reset_interval,
-  SAMPLE_FILTER_T sample_filter)
+  cagra_filter_dev sample_filter)
 {
   using job_desc_type = job_desc_t<DATASET_DESCRIPTOR_T>;
   __shared__ typename job_desc_type::input_t job_descriptor;
@@ -1147,32 +1139,29 @@ RAFT_KERNEL __launch_bounds__(1024, 1) search_kernel_p(
     auto query_id              = worker_data.value.query_id;
 
     // work phase
-    search_core<MAX_ITOPK,
-                MAX_CANDIDATES,
-                TOPK_BY_BITONIC_SORT,
-                DATASET_DESCRIPTOR_T,
-                SAMPLE_FILTER_T>(result_indices_ptr,
-                                 result_distances_ptr,
-                                 top_k,
-                                 dataset_desc,
-                                 queries_ptr,
-                                 knn_graph,
-                                 graph_degree,
-                                 num_distilation,
-                                 rand_xor_mask,
-                                 seed_ptr,
-                                 num_seeds,
-                                 visited_hashmap_ptr,
-                                 internal_topk,
-                                 search_width,
-                                 min_iteration,
-                                 max_iteration,
-                                 num_executed_iterations,
-                                 hash_bitlen,
-                                 small_hash_bitlen,
-                                 small_hash_reset_interval,
-                                 query_id,
-                                 sample_filter);
+    search_core<MAX_ITOPK, MAX_CANDIDATES, TOPK_BY_BITONIC_SORT, DATASET_DESCRIPTOR_T>(
+      result_indices_ptr,
+      result_distances_ptr,
+      top_k,
+      dataset_desc,
+      queries_ptr,
+      knn_graph,
+      graph_degree,
+      num_distilation,
+      rand_xor_mask,
+      seed_ptr,
+      num_seeds,
+      visited_hashmap_ptr,
+      internal_topk,
+      search_width,
+      min_iteration,
+      max_iteration,
+      num_executed_iterations,
+      hash_bitlen,
+      small_hash_bitlen,
+      small_hash_reset_interval,
+      query_id,
+      sample_filter);
 
     // make sure all writes are visible even for the host
     //     (e.g. when result buffers are in pinned memory)
@@ -1193,28 +1182,18 @@ template <bool Persistent,
           unsigned MAX_ITOPK,
           unsigned MAX_CANDIDATES,
           unsigned TOPK_BY_BITONIC_SORT,
-          class DATASET_DESCRIPTOR_T,
-          class SAMPLE_FILTER_T>
+          class DATASET_DESCRIPTOR_T>
 auto dispatch_kernel = []() {
   if constexpr (Persistent) {
-    return search_kernel_p<MAX_ITOPK,
-                           MAX_CANDIDATES,
-                           TOPK_BY_BITONIC_SORT,
-                           DATASET_DESCRIPTOR_T,
-                           SAMPLE_FILTER_T>;
+    return search_kernel_p<MAX_ITOPK, MAX_CANDIDATES, TOPK_BY_BITONIC_SORT, DATASET_DESCRIPTOR_T>;
   } else {
-    return search_kernel<MAX_ITOPK,
-                         MAX_CANDIDATES,
-                         TOPK_BY_BITONIC_SORT,
-                         DATASET_DESCRIPTOR_T,
-                         SAMPLE_FILTER_T>;
+    return search_kernel<MAX_ITOPK, MAX_CANDIDATES, TOPK_BY_BITONIC_SORT, DATASET_DESCRIPTOR_T>;
   }
 }();
 
-template <bool Persistent, typename DATASET_DESCRIPTOR_T, typename SAMPLE_FILTER_T>
+template <bool Persistent, typename DATASET_DESCRIPTOR_T>
 struct search_kernel_config {
-  using kernel_t =
-    decltype(dispatch_kernel<Persistent, 64, 64, 0, DATASET_DESCRIPTOR_T, SAMPLE_FILTER_T>);
+  using kernel_t = decltype(dispatch_kernel<Persistent, 64, 64, 0, DATASET_DESCRIPTOR_T>);
 
   template <unsigned MAX_CANDIDATES, unsigned USE_BITONIC_SORT>
   static auto choose_search_kernel(unsigned itopk_size) -> kernel_t
@@ -1224,29 +1203,25 @@ struct search_kernel_config {
                              64,
                              MAX_CANDIDATES,
                              USE_BITONIC_SORT,
-                             DATASET_DESCRIPTOR_T,
-                             SAMPLE_FILTER_T>;
+                             DATASET_DESCRIPTOR_T>;
     } else if (itopk_size <= 128) {
       return dispatch_kernel<Persistent,
                              128,
                              MAX_CANDIDATES,
                              USE_BITONIC_SORT,
-                             DATASET_DESCRIPTOR_T,
-                             SAMPLE_FILTER_T>;
+                             DATASET_DESCRIPTOR_T>;
     } else if (itopk_size <= 256) {
       return dispatch_kernel<Persistent,
                              256,
                              MAX_CANDIDATES,
                              USE_BITONIC_SORT,
-                             DATASET_DESCRIPTOR_T,
-                             SAMPLE_FILTER_T>;
+                             DATASET_DESCRIPTOR_T>;
     } else if (itopk_size <= 512) {
       return dispatch_kernel<Persistent,
                              512,
                              MAX_CANDIDATES,
                              USE_BITONIC_SORT,
-                             DATASET_DESCRIPTOR_T,
-                             SAMPLE_FILTER_T>;
+                             DATASET_DESCRIPTOR_T>;
     }
     THROW("No kernel for parametels itopk_size %u, max_candidates %u", itopk_size, MAX_CANDIDATES);
   }
@@ -1266,19 +1241,9 @@ struct search_kernel_config {
       // Radix-based topk is used
       constexpr unsigned max_candidates = 32;  // to avoid build failure
       if (itopk_size <= 256) {
-        return dispatch_kernel<Persistent,
-                               256,
-                               max_candidates,
-                               0,
-                               DATASET_DESCRIPTOR_T,
-                               SAMPLE_FILTER_T>;
+        return dispatch_kernel<Persistent, 256, max_candidates, 0, DATASET_DESCRIPTOR_T>;
       } else if (itopk_size <= 512) {
-        return dispatch_kernel<Persistent,
-                               512,
-                               max_candidates,
-                               0,
-                               DATASET_DESCRIPTOR_T,
-                               SAMPLE_FILTER_T>;
+        return dispatch_kernel<Persistent, 512, max_candidates, 0, DATASET_DESCRIPTOR_T>;
       }
     }
     THROW("No kernel for parametels itopk_size %u, num_itopk_candidates %u",
@@ -1749,13 +1714,13 @@ struct alignas(kCacheLineBytes) launcher_t {
   }
 };
 
-template <typename DataT, typename IndexT, typename DistanceT, typename SampleFilterT>
+template <typename DataT, typename IndexT, typename DistanceT>
 struct alignas(kCacheLineBytes) persistent_runner_t : public persistent_runner_base_t {
   using descriptor_base_type = dataset_descriptor_base_t<DataT, IndexT, DistanceT>;
   using index_type           = IndexT;
   using distance_type        = DistanceT;
   using data_type            = DataT;
-  using kernel_config_type   = search_kernel_config<true, descriptor_base_type, SampleFilterT>;
+  using kernel_config_type   = search_kernel_config<true, descriptor_base_type>;
   using kernel_type          = typename kernel_config_type::kernel_t;
   using job_desc_type        = job_desc_t<descriptor_base_type>;
   kernel_type kernel;
@@ -1788,7 +1753,7 @@ struct alignas(kCacheLineBytes) persistent_runner_t : public persistent_runner_b
     size_t search_width,
     size_t min_iterations,
     size_t max_iterations,
-    SampleFilterT sample_filter,
+    cagra_filter_dev sample_filter,
     float persistent_lifetime,
     float persistent_device_usage) -> uint64_t
   {
@@ -1814,7 +1779,7 @@ struct alignas(kCacheLineBytes) persistent_runner_t : public persistent_runner_b
     size_t search_width,
     size_t min_iterations,
     size_t max_iterations,
-    SampleFilterT sample_filter,
+    cagra_filter_dev sample_filter,
     float persistent_lifetime,
     float persistent_device_usage)
     : persistent_runner_base_t{persistent_lifetime},
@@ -2076,7 +2041,7 @@ auto get_runner(Args... args) -> std::shared_ptr<RunnerT>
   return runner;
 }
 
-template <typename DataT, typename IndexT, typename DistanceT, typename SampleFilterT>
+template <typename DataT, typename IndexT, typename DistanceT>
 void select_and_run(const dataset_descriptor_host<DataT, IndexT, DistanceT>& dataset_desc,
                     raft::device_matrix_view<const IndexT, int64_t, raft::row_major> graph,
                     uintptr_t topk_indices_ptr,     // [num_queries, topk]
@@ -2095,11 +2060,11 @@ void select_and_run(const dataset_descriptor_host<DataT, IndexT, DistanceT>& dat
                     size_t small_hash_bitlen,
                     size_t small_hash_reset_interval,
                     uint32_t num_seeds,
-                    SampleFilterT sample_filter,
+                    cagra_filter_dev sample_filter,
                     cudaStream_t stream)
 {
   if (ps.persistent) {
-    using runner_type = persistent_runner_t<DataT, IndexT, DistanceT, SampleFilterT>;
+    using runner_type = persistent_runner_t<DataT, IndexT, DistanceT>;
 
     get_runner<runner_type>(/*
 Note, we're passing the descriptor by reference here, and this reference is going to be passed to a
@@ -2127,8 +2092,8 @@ control is returned in this thread (in persistent_runner_t constructor), so we'r
       ->launch(topk_indices_ptr, topk_distances_ptr, queries_ptr, num_queries, topk);
   } else {
     using descriptor_base_type = dataset_descriptor_base_t<DataT, IndexT, DistanceT>;
-    auto kernel                = search_kernel_config<false, descriptor_base_type, SampleFilterT>::
-      choose_itopk_and_mx_candidates(ps.itopk_size, num_itopk_candidates, block_size);
+    auto kernel = search_kernel_config<false, descriptor_base_type>::choose_itopk_and_mx_candidates(
+      ps.itopk_size, num_itopk_candidates, block_size);
     RAFT_CUDA_TRY(
       cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size));
     dim3 thread_dims(block_size, 1, 1);

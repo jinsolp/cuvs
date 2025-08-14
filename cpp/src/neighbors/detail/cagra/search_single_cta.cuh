@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2024, NVIDIA CORPORATION.
+ * Copyright (c) 2023-2025, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -48,13 +48,9 @@
 namespace cuvs::neighbors::cagra::detail {
 namespace single_cta_search {
 
-template <typename DataT,
-          typename IndexT,
-          typename DistanceT,
-          typename SAMPLE_FILTER_T,
-          typename OutputIndexT = IndexT>
-struct search : search_plan_impl<DataT, IndexT, DistanceT, SAMPLE_FILTER_T, OutputIndexT> {
-  using base_type  = search_plan_impl<DataT, IndexT, DistanceT, SAMPLE_FILTER_T, OutputIndexT>;
+template <typename DataT, typename IndexT, typename DistanceT, typename OutputIndexT = IndexT>
+struct search : search_plan_impl<DataT, IndexT, DistanceT, OutputIndexT> {
+  using base_type  = search_plan_impl<DataT, IndexT, DistanceT, OutputIndexT>;
   using DATA_T     = typename base_type::DATA_T;
   using INDEX_T    = typename base_type::INDEX_T;
   using DISTANCE_T = typename base_type::DISTANCE_T;
@@ -93,6 +89,8 @@ struct search : search_plan_impl<DataT, IndexT, DistanceT, SAMPLE_FILTER_T, Outp
   using base_type::num_executed_iterations;
   using base_type::num_seeds;
 
+  using base_type::filter_tag;
+
   uint32_t num_itopk_candidates;
 
   search(raft::resources const& res,
@@ -101,8 +99,9 @@ struct search : search_plan_impl<DataT, IndexT, DistanceT, SAMPLE_FILTER_T, Outp
          int64_t dim,
          int64_t dataset_size,
          int64_t graph_degree,
-         uint32_t topk)
-    : base_type(res, params, dataset_desc, dim, dataset_size, graph_degree, topk)
+         uint32_t topk,
+         filtering::FilterType filter_tag)
+    : base_type(res, params, dataset_desc, dim, dataset_size, graph_degree, topk, filter_tag)
   {
     set_params(res);
   }
@@ -147,7 +146,7 @@ struct search : search_plan_impl<DataT, IndexT, DistanceT, SAMPLE_FILTER_T, Outp
       }
     }
 
-    if (!std::is_same_v<SAMPLE_FILTER_T, cuvs::neighbors::filtering::none_sample_filter>) {
+    if (filter_tag != filtering::FilterType::None) {
       // For filtering postprocess
       using scan_op_t = cub::WarpScan<unsigned>;
       additional_smem_size =
@@ -229,7 +228,7 @@ struct search : search_plan_impl<DataT, IndexT, DistanceT, SAMPLE_FILTER_T, Outp
                   const INDEX_T* dev_seed_ptr,                   // [num_queries, num_seeds]
                   std::uint32_t* const num_executed_iterations,  // [num_queries]
                   uint32_t topk,
-                  SAMPLE_FILTER_T sample_filter)
+                  cagra_filter_dev sample_filter)
   {
     cudaStream_t stream                 = raft::resource::get_cuda_stream(res);
     constexpr uintptr_t kOutputIndexTag = raft::Pow2<sizeof(OutputIndexT)>::Log2;
