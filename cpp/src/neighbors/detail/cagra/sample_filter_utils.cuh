@@ -46,15 +46,9 @@ struct cagra_filter_dev {
 
   _RAFT_HOST_DEVICE cagra_filter_dev(none_filter_args_t args = {})
     : tag_(filtering::FilterType::None), args_(args) {};
-  // {
-  //   new (&args_.none_filter_args) none_filter_args_t(args);
-  // }
 
   _RAFT_HOST_DEVICE cagra_filter_dev(const bitset_filter_args_t& args)
     : tag_(filtering::FilterType::Bitset), args_(args) {};
-  // {
-  //   new (&args_.bitset_filter_args) bitset_filter_args_t(args);
-  // }
 
   constexpr __forceinline__ _RAFT_HOST_DEVICE bool operator()(const uint32_t query_id,
                                                               const uint32_t sample_id)
