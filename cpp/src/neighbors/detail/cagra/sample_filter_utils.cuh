@@ -33,21 +33,28 @@ struct cagra_filter_dev {
     none_filter_args_t none_filter_args;
     bitset_filter_args_t bitset_filter_args;
 
-    _RAFT_HOST_DEVICE cagra_filter_dev_args_variant() {}
-    _RAFT_HOST_DEVICE ~cagra_filter_dev_args_variant() {}
+    _RAFT_HOST_DEVICE explicit cagra_filter_dev_args_variant(const none_filter_args_t& args)
+      : none_filter_args(args)
+    {
+    }
+
+    _RAFT_HOST_DEVICE explicit cagra_filter_dev_args_variant(const bitset_filter_args_t& args)
+      : bitset_filter_args(args)
+    {
+    }
   } args_;
 
   _RAFT_HOST_DEVICE cagra_filter_dev(none_filter_args_t args = {})
-    : tag_(filtering::FilterType::None)
-  {
-    new (&args_.none_filter_args) none_filter_args_t(args);
-  }
+    : tag_(filtering::FilterType::None), args_(args) {};
+  // {
+  //   new (&args_.none_filter_args) none_filter_args_t(args);
+  // }
 
   _RAFT_HOST_DEVICE cagra_filter_dev(const bitset_filter_args_t& args)
-    : tag_(filtering::FilterType::Bitset)
-  {
-    new (&args_.bitset_filter_args) bitset_filter_args_t(args);
-  }
+    : tag_(filtering::FilterType::Bitset), args_(args) {};
+  // {
+  //   new (&args_.bitset_filter_args) bitset_filter_args_t(args);
+  // }
 
   constexpr __forceinline__ _RAFT_HOST_DEVICE bool operator()(const uint32_t query_id,
                                                               const uint32_t sample_id)

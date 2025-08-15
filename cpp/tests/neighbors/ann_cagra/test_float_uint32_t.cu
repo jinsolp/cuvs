@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2024, NVIDIA CORPORATION.
+ * Copyright (c) 2023-2025, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -44,5 +44,9 @@ INSTANTIATE_TEST_CASE_P(AnnCagraFilterTest,
 INSTANTIATE_TEST_CASE_P(AnnCagraIndexMergeTest,
                         AnnCagraIndexMergeTestF_U32,
                         ::testing::ValuesIn(inputs));
+
+INSTANTIATE_TEST_CASE_P(AnnCagraFilterTest_Kernel,
+                        AnnCagraFilterTestF_U32,
+                        ::testing::ValuesIn(inputs_kernelcheck));
 
 }  // namespace cuvs::neighbors::cagra
