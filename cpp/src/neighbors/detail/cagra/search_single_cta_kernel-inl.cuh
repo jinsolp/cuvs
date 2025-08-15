@@ -661,6 +661,8 @@ __device__ void search_core(
   __syncthreads();
   _CLK_REC(clk_compute_1st_distance);
 
+  bool filter_not_none = sample_filter.tag_ != filtering::FilterType::None;
+
   std::uint32_t iter = 0;
   while (1) {
     // sort
@@ -704,7 +706,7 @@ __device__ void search_core(
 
       // topk with bitonic sort
       _CLK_START();
-      if (sample_filter.tag_ != filtering::FilterType::None || *filter_flag == 0) {
+      if (filter_not_none || *filter_flag == 0) {
         // Move the filtered out index to the end of the itopk list
         for (unsigned i = 0; i < search_width; i++) {
           move_invalid_to_end_of_list(
@@ -792,7 +794,7 @@ __device__ void search_core(
     _CLK_REC(clk_compute_distance);
 
     // Filtering
-    if (sample_filter.tag_ != filtering::FilterType::None) {
+    if (filter_not_none) {
       if (threadIdx.x == 0) { *filter_flag = 0; }
       __syncthreads();
 
@@ -817,7 +819,7 @@ __device__ void search_core(
   }
 
   // Post process for filtering
-  if (sample_filter.tag_ != filtering::FilterType::None) {
+  if (filter_not_none) {
     constexpr INDEX_T index_msb_1_mask = utils::gen_index_msb_1_mask<INDEX_T>::value;
     const INDEX_T invalid_index        = utils::get_max_value<INDEX_T>();
 
