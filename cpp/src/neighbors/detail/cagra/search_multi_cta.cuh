@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2024, NVIDIA CORPORATION.
+ * Copyright (c) 2023-2025, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,6 +19,7 @@
 #include "compute_distance-ext.cuh"
 #include "device_common.hpp"
 #include "hashmap.hpp"
+#include "sample_filter_utils.cuh"
 #include "search_multi_cta_kernel.cuh"
 #include "search_plan.cuh"
 #include "topk_for_cagra/topk.h"  // TODO replace with raft topk if possible
@@ -51,13 +52,9 @@
 namespace cuvs::neighbors::cagra::detail {
 namespace multi_cta_search {
 
-template <typename DataT,
-          typename IndexT,
-          typename DistanceT,
-          typename SAMPLE_FILTER_T,
-          typename OutputIndexT = IndexT>
-struct search : public search_plan_impl<DataT, IndexT, DistanceT, SAMPLE_FILTER_T, OutputIndexT> {
-  using base_type  = search_plan_impl<DataT, IndexT, DistanceT, SAMPLE_FILTER_T, OutputIndexT>;
+template <typename DataT, typename IndexT, typename DistanceT, typename OutputIndexT = IndexT>
+struct search : public search_plan_impl<DataT, IndexT, DistanceT, OutputIndexT> {
+  using base_type  = search_plan_impl<DataT, IndexT, DistanceT, OutputIndexT>;
   using DATA_T     = typename base_type::DATA_T;
   using INDEX_T    = typename base_type ::INDEX_T;
   using DISTANCE_T = typename base_type::DISTANCE_T;
@@ -96,6 +93,8 @@ struct search : public search_plan_impl<DataT, IndexT, DistanceT, SAMPLE_FILTER_
   using base_type::num_executed_iterations;
   using base_type::num_seeds;
 
+  using base_type::filter_tag;
+
   constexpr static bool kNeedIndexCopy = sizeof(INDEX_T) != sizeof(OutputIndexT);
 
   uint32_t num_cta_per_query;
@@ -110,8 +109,9 @@ struct search : public search_plan_impl<DataT, IndexT, DistanceT, SAMPLE_FILTER_
          int64_t dim,
          int64_t dataset_size,
          int64_t graph_degree,
-         uint32_t topk)
-    : base_type(res, params, dataset_desc, dim, dataset_size, graph_degree, topk),
+         uint32_t topk,
+         filtering::FilterType filter_tag)
+    : base_type(res, params, dataset_desc, dim, dataset_size, graph_degree, topk, filter_tag),
       intermediate_indices(res),
       intermediate_distances(res),
       topk_workspace(res)
@@ -219,7 +219,7 @@ struct search : public search_plan_impl<DataT, IndexT, DistanceT, SAMPLE_FILTER_
                   const INDEX_T* dev_seed_ptr,              // [num_queries, num_seeds]
                   uint32_t* const num_executed_iterations,  // [num_queries,]
                   uint32_t topk,
-                  SAMPLE_FILTER_T sample_filter)
+                  cagra_filter_dev sample_filter)
   {
     cudaStream_t stream = raft::resource::get_cuda_stream(res);
     select_and_run(dataset_desc,

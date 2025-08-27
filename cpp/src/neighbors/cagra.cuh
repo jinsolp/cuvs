@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2024, NVIDIA CORPORATION.
+ * Copyright (c) 2023-2025, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -298,14 +298,14 @@ index<T, IdxT> build(
  * k]
  * @param[in] sample_filter a device filter function that greenlights samples for a given query
  */
-template <typename T, typename IdxT, typename CagraSampleFilterT, typename OutputIdxT = IdxT>
+template <typename T, typename IdxT, typename OutputIdxT = IdxT>
 void search_with_filtering(raft::resources const& res,
                            const search_params& params,
                            const index<T, IdxT>& idx,
                            raft::device_matrix_view<const T, int64_t, raft::row_major> queries,
                            raft::device_matrix_view<OutputIdxT, int64_t, raft::row_major> neighbors,
                            raft::device_matrix_view<float, int64_t, raft::row_major> distances,
-                           CagraSampleFilterT sample_filter = CagraSampleFilterT())
+                           detail::cagra_filter_dev sample_filter)
 {
   RAFT_EXPECTS(
     queries.extent(0) == neighbors.extent(0) && queries.extent(0) == distances.extent(0),
@@ -316,7 +316,7 @@ void search_with_filtering(raft::resources const& res,
   RAFT_EXPECTS(queries.extent(1) == idx.dim(),
                "Number of query dimensions should equal number of dimensions in the index.");
 
-  return cagra::detail::search_main<T, OutputIdxT, CagraSampleFilterT, IdxT>(
+  return cagra::detail::search_main<T, OutputIdxT, IdxT>(
     res, params, idx, queries, neighbors, distances, sample_filter);
 }
 
@@ -334,9 +334,9 @@ void search(raft::resources const& res,
     auto& sample_filter       = dynamic_cast<const none_filter_type&>(sample_filter_ref);
     search_params params_copy = params;
     if (params.filtering_rate < 0.0) { params_copy.filtering_rate = 0.0; }
-    auto sample_filter_copy = sample_filter;
-    return search_with_filtering<T, IdxT, none_filter_type, OutputIdxT>(
-      res, params_copy, idx, queries, neighbors, distances, sample_filter_copy);
+    detail::cagra_filter_dev cagra_filter_dev_none{detail::none_filter_args_t{}};
+    return search_with_filtering<T, IdxT, OutputIdxT>(
+      res, params_copy, idx, queries, neighbors, distances, cagra_filter_dev_none);
   } catch (const std::bad_cast&) {
   }
 
@@ -353,9 +353,9 @@ void search(raft::resources const& res,
       params_copy.filtering_rate =
         std::min(std::max(filtering_rate, min_filtering_rate), max_filtering_rate);
     }
-    auto sample_filter_copy = sample_filter;
-    return search_with_filtering<T, IdxT, decltype(sample_filter_copy), OutputIdxT>(
-      res, params_copy, idx, queries, neighbors, distances, sample_filter_copy);
+    detail::cagra_filter_dev cagra_filter_dev_bitset{sample_filter.bitset_view_};
+    return search_with_filtering<T, IdxT, OutputIdxT>(
+      res, params_copy, idx, queries, neighbors, distances, cagra_filter_dev_bitset);
   } catch (const std::bad_cast&) {
     RAFT_FAIL("Unsupported sample filter type");
   }

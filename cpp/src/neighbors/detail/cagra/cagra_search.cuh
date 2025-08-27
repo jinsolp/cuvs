@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2024, NVIDIA CORPORATION.
+ * Copyright (c) 2023-2025, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -44,11 +44,7 @@
 
 namespace cuvs::neighbors::cagra::detail {
 
-template <typename DataT,
-          typename IndexT,
-          typename DistanceT,
-          typename CagraSampleFilterT,
-          typename OutputIdxT = IndexT>
+template <typename DataT, typename IndexT, typename DistanceT, typename OutputIdxT = IndexT>
 void search_main_core(raft::resources const& res,
                       search_params params,
                       const dataset_descriptor_host<DataT, IndexT, DistanceT>& dataset_desc,
@@ -56,7 +52,7 @@ void search_main_core(raft::resources const& res,
                       raft::device_matrix_view<const DataT, int64_t, raft::row_major> queries,
                       raft::device_matrix_view<OutputIdxT, int64_t, raft::row_major> neighbors,
                       raft::device_matrix_view<DistanceT, int64_t, raft::row_major> distances,
-                      CagraSampleFilterT sample_filter = CagraSampleFilterT())
+                      cagra_filter_dev sample_filter)
 {
   RAFT_LOG_DEBUG("# dataset size = %lu, dim = %lu\n",
                  static_cast<size_t>(graph.extent(0)),
@@ -77,10 +73,16 @@ void search_main_core(raft::resources const& res,
     topk,
     queries.extent(1));
 
-  using CagraSampleFilterT_s = typename CagraSampleFilterT_Selector<CagraSampleFilterT>::type;
-  std::unique_ptr<search_plan_impl<DataT, IndexT, DistanceT, CagraSampleFilterT_s, OutputIdxT>>
-    plan = factory<DataT, IndexT, DistanceT, CagraSampleFilterT_s, OutputIdxT>::create(
-      res, params, dataset_desc, queries.extent(1), graph.extent(0), graph.extent(1), topk);
+  // using CagraSampleFilterT_s = typename CagraSampleFilterT_Selector<CagraSampleFilterT>::type;
+  std::unique_ptr<search_plan_impl<DataT, IndexT, DistanceT, OutputIdxT>> plan =
+    factory<DataT, IndexT, DistanceT, OutputIdxT>::create(res,
+                                                          params,
+                                                          dataset_desc,
+                                                          queries.extent(1),
+                                                          graph.extent(0),
+                                                          graph.extent(1),
+                                                          topk,
+                                                          sample_filter.tag_);
 
   plan->check(topk);
 
@@ -100,6 +102,7 @@ void search_main_core(raft::resources const& res,
         : nullptr;
     uint32_t* _num_executed_iterations = nullptr;
 
+    sample_filter.offset = qid;
     (*plan)(res,
             graph,
             _topk_indices_ptr,
@@ -109,7 +112,7 @@ void search_main_core(raft::resources const& res,
             _seed_ptr,
             _num_executed_iterations,
             topk,
-            set_offset(sample_filter, qid));
+            sample_filter);
   }
 }
 
@@ -131,18 +134,14 @@ void search_main_core(raft::resources const& res,
  * @param[out] distances a device matrix view to the distances to the selected neighbors [n_queries,
  * k]
  */
-template <typename T,
-          typename OutputIdxT,
-          typename CagraSampleFilterT,
-          typename IdxT      = uint32_t,
-          typename DistanceT = float>
+template <typename T, typename OutputIdxT, typename IdxT = uint32_t, typename DistanceT = float>
 void search_main(raft::resources const& res,
                  search_params params,
                  const index<T, IdxT>& index,
                  raft::device_matrix_view<const T, int64_t, raft::row_major> queries,
                  raft::device_matrix_view<OutputIdxT, int64_t, raft::row_major> neighbors,
                  raft::device_matrix_view<DistanceT, int64_t, raft::row_major> distances,
-                 CagraSampleFilterT sample_filter = CagraSampleFilterT())
+                 cagra_filter_dev sample_filter)
 {
   // n_rows has the same type as the dataset index (the array extents type)
   using ds_idx_type = decltype(index.data().n_rows());
@@ -152,7 +151,7 @@ void search_main(raft::resources const& res,
     // Search using a plain (strided) row-major dataset
     auto desc = dataset_descriptor_init_with_cache<T, IdxT, DistanceT>(
       res, params, *strided_dset, index.metric());
-    search_main_core<T, IdxT, DistanceT, CagraSampleFilterT, OutputIdxT>(
+    search_main_core<T, IdxT, DistanceT, OutputIdxT>(
       res, params, desc, index.graph(), queries, neighbors, distances, sample_filter);
   } else if (auto* vpq_dset = dynamic_cast<const vpq_dataset<float, ds_idx_type>*>(&index.data());
              vpq_dset != nullptr) {
@@ -162,7 +161,7 @@ void search_main(raft::resources const& res,
              vpq_dset != nullptr) {
     auto desc = dataset_descriptor_init_with_cache<T, IdxT, DistanceT>(
       res, params, *vpq_dset, index.metric());
-    search_main_core<T, IdxT, DistanceT, CagraSampleFilterT, OutputIdxT>(
+    search_main_core<T, IdxT, DistanceT, OutputIdxT>(
       res, params, desc, index.graph(), queries, neighbors, distances, sample_filter);
   } else if (auto* empty_dset = dynamic_cast<const empty_dataset<ds_idx_type>*>(&index.data());
              empty_dset != nullptr) {

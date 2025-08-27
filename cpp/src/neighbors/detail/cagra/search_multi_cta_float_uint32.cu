@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2024, NVIDIA CORPORATION.
+ * Copyright (c) 2023-2025, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -29,14 +29,5 @@
 #define COMMA ,
 
 namespace cuvs::neighbors::cagra::detail::multi_cta_search {
-instantiate_kernel_selection(float,
-                             uint32_t,
-                             float,
-                             cuvs::neighbors::filtering::none_sample_filter);
-instantiate_kernel_selection(float,
-                             uint32_t,
-                             float,
-                             CagraSampleFilterWithQueryIdOffset<
-                               cuvs::neighbors::filtering::bitset_filter<uint32_t COMMA int64_t>>);
-
+instantiate_kernel_selection(float, uint32_t, float);
 }  // namespace cuvs::neighbors::cagra::detail::multi_cta_search

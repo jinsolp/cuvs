@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2024, NVIDIA CORPORATION.
+ * Copyright (c) 2023-2025, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -298,8 +298,7 @@ void pickup_next_parents(INDEX_T* const parent_candidates_ptr,  // [num_queries,
                                                   terminate_flag);
 }
 
-template <class DATASET_DESCRIPTOR_T,
-          class SAMPLE_FILTER_T>
+template <class DATASET_DESCRIPTOR_T>
 RAFT_KERNEL compute_distance_to_child_nodes_kernel(
   const typename DATASET_DESCRIPTOR_T::INDEX_T* const
     parent_node_list,  // [num_queries, search_width]
@@ -320,7 +319,7 @@ RAFT_KERNEL compute_distance_to_child_nodes_kernel(
   typename DATASET_DESCRIPTOR_T::INDEX_T* const result_indices_ptr,       // [num_queries, ldd]
   typename DATASET_DESCRIPTOR_T::DISTANCE_T* const result_distances_ptr,  // [num_queries, ldd]
   const std::uint32_t ldd,  // (*) ldd >= search_width * graph_degree
-  SAMPLE_FILTER_T sample_filter)
+  cagra_filter_dev sample_filter)
 {
   using INDEX_T    = typename DATASET_DESCRIPTOR_T::INDEX_T;
   using DISTANCE_T = typename DATASET_DESCRIPTOR_T::DISTANCE_T;
@@ -373,8 +372,7 @@ RAFT_KERNEL compute_distance_to_child_nodes_kernel(
     }
   }
 
-  if constexpr (!std::is_same<SAMPLE_FILTER_T,
-                              cuvs::neighbors::filtering::none_sample_filter>::value) {
+  if (sample_filter.tag_ != filtering::FilterType::None) {
     if (!sample_filter(query_id, parent_index)) {
       parent_candidates_ptr[parent_list_index + (lds * query_id)] = utils::get_max_value<INDEX_T>();
       parent_distance_ptr[parent_list_index + (lds * query_id)] =
@@ -385,8 +383,7 @@ RAFT_KERNEL compute_distance_to_child_nodes_kernel(
 
 template <typename DataT,
           typename IndexT,
-          typename DistanceT,
-          class SAMPLE_FILTER_T>
+          typename DistanceT>
 void compute_distance_to_child_nodes(
   const IndexT* parent_node_list,        // [num_queries, search_width]
   IndexT* const parent_candidates_ptr,   // [num_queries, search_width]
@@ -403,7 +400,7 @@ void compute_distance_to_child_nodes(
   IndexT* result_indices_ptr,       // [num_queries, ldd]
   DistanceT* result_distances_ptr,  // [num_queries, ldd]
   std::uint32_t ldd,                // (*) ldd >= search_width * graph_degree
-  SAMPLE_FILTER_T sample_filter,
+  cagra_filter_dev sample_filter,
   cudaStream_t cuda_stream)
 {
   const auto block_size      = 128;
@@ -461,14 +458,14 @@ void remove_parent_bit(const std::uint32_t num_queries,
 }
 
 // This function called after the `remove_parent_bit` function
-template <class INDEX_T, class DISTANCE_T, class SAMPLE_FILTER_T>
+template <class INDEX_T, class DISTANCE_T>
 RAFT_KERNEL apply_filter_kernel(INDEX_T* const result_indices_ptr,
                                 DISTANCE_T* const result_distances_ptr,
                                 const std::size_t lds,
                                 const std::uint32_t result_buffer_size,
                                 const std::uint32_t num_queries,
                                 const INDEX_T query_id_offset,
-                                SAMPLE_FILTER_T sample_filter)
+                                cagra_filter_dev sample_filter)
 {
   constexpr INDEX_T index_msb_1_mask = utils::gen_index_msb_1_mask<INDEX_T>::value;
   const auto tid                     = threadIdx.x + blockIdx.x * blockDim.x;
@@ -484,14 +481,14 @@ RAFT_KERNEL apply_filter_kernel(INDEX_T* const result_indices_ptr,
   }
 }
 
-template <class INDEX_T, class DISTANCE_T, class SAMPLE_FILTER_T>
+template <class INDEX_T, class DISTANCE_T>
 void apply_filter(INDEX_T* const result_indices_ptr,
                   DISTANCE_T* const result_distances_ptr,
                   const std::size_t lds,
                   const std::uint32_t result_buffer_size,
                   const std::uint32_t num_queries,
                   const INDEX_T query_id_offset,
-                  SAMPLE_FILTER_T sample_filter,
+                  cagra_filter_dev sample_filter,
                   cudaStream_t cuda_stream)
 {
   const std::uint32_t block_size = 256;
@@ -574,13 +571,9 @@ void set_value_batch(T* const dev_ptr,
 // |<---                 result_buffer_allocation_size                 --->|
 // |<---                       result_buffer_size  --->|                     // Double buffer (A)
 //                      |<---  result_buffer_size                      --->| // Double buffer (B)
-template <typename DataT,
-          typename IndexT,
-          typename DistanceT,
-          typename SAMPLE_FILTER_T,
-          typename OutputIndexT = IndexT>
-struct search : search_plan_impl<DataT, IndexT, DistanceT, SAMPLE_FILTER_T, OutputIndexT> {
-  using base_type  = search_plan_impl<DataT, IndexT, DistanceT, SAMPLE_FILTER_T, OutputIndexT>;
+template <typename DataT, typename IndexT, typename DistanceT, typename OutputIndexT = IndexT>
+struct search : search_plan_impl<DataT, IndexT, DistanceT, OutputIndexT> {
+  using base_type  = search_plan_impl<DataT, IndexT, DistanceT, OutputIndexT>;
   using DATA_T     = typename base_type::DATA_T;
   using INDEX_T    = typename base_type::INDEX_T;
   using DISTANCE_T = typename base_type::DISTANCE_T;
@@ -621,6 +614,8 @@ struct search : search_plan_impl<DataT, IndexT, DistanceT, SAMPLE_FILTER_T, Outp
   using base_type::num_executed_iterations;
   using base_type::num_seeds;
 
+  using base_type::filter_tag;
+
   size_t result_buffer_allocation_size;
   lightweight_uvector<INDEX_T> result_indices;       // results_indices_buffer
   lightweight_uvector<DISTANCE_T> result_distances;  // result_distances_buffer
@@ -641,8 +636,9 @@ struct search : search_plan_impl<DataT, IndexT, DistanceT, SAMPLE_FILTER_T, Outp
          int64_t dim,
          int64_t dataset_size,
          int64_t graph_degree,
-         uint32_t topk)
-    : base_type(res, params, dataset_desc, dim, dataset_size, graph_degree, topk),
+         uint32_t topk,
+         filtering::FilterType filter_tag)
+    : base_type(res, params, dataset_desc, dim, dataset_size, graph_degree, topk, filter_tag),
       result_indices(res),
       result_distances(res),
       parent_node_list(res),
@@ -783,7 +779,7 @@ struct search : search_plan_impl<DataT, IndexT, DistanceT, SAMPLE_FILTER_T, Outp
                   const INDEX_T* dev_seed_ptr,              // [num_queries, num_seeds]
                   uint32_t* const num_executed_iterations,  // [num_queries,]
                   uint32_t topk,
-                  SAMPLE_FILTER_T sample_filter)
+                  cagra_filter_dev sample_filter)
   {
     // Init hashmap
     cudaStream_t stream      = raft::resource::get_cuda_stream(res);
@@ -793,9 +789,7 @@ struct search : search_plan_impl<DataT, IndexT, DistanceT, SAMPLE_FILTER_T, Outp
 
     // Topk hint can not be used when applying a filter
     uint32_t* const top_hint_ptr =
-      std::is_same<SAMPLE_FILTER_T, cuvs::neighbors::filtering::none_sample_filter>::value
-        ? topk_hint.data()
-        : nullptr;
+      sample_filter.tag_ == filtering::FilterType::None ? topk_hint.data() : nullptr;
     // Init topk_hint
     if (top_hint_ptr != nullptr && topk_hint.size() > 0) {
       set_value(top_hint_ptr, 0xffffffffu, num_queries, stream);
@@ -891,8 +885,7 @@ struct search : search_plan_impl<DataT, IndexT, DistanceT, SAMPLE_FILTER_T, Outp
     auto result_indices_ptr   = result_indices.data() + (iter & 0x1) * result_buffer_size;
     auto result_distances_ptr = result_distances.data() + (iter & 0x1) * result_buffer_size;
 
-    if constexpr (!std::is_same<SAMPLE_FILTER_T,
-                                cuvs::neighbors::filtering::none_sample_filter>::value) {
+    if (sample_filter.tag_ != filtering::FilterType::None) {
       // Remove parent bit in search results
       remove_parent_bit(num_queries,
                         result_buffer_size,
@@ -900,15 +893,14 @@ struct search : search_plan_impl<DataT, IndexT, DistanceT, SAMPLE_FILTER_T, Outp
                         result_buffer_allocation_size,
                         stream);
 
-      apply_filter<INDEX_T, DISTANCE_T, SAMPLE_FILTER_T>(
-        result_indices.data() + (iter & 0x1) * itopk_size,
-        result_distances.data() + (iter & 0x1) * itopk_size,
-        result_buffer_allocation_size,
-        result_buffer_size,
-        num_queries,
-        0,
-        sample_filter,
-        stream);
+      apply_filter<INDEX_T, DISTANCE_T>(result_indices.data() + (iter & 0x1) * itopk_size,
+                                        result_distances.data() + (iter & 0x1) * itopk_size,
+                                        result_buffer_allocation_size,
+                                        result_buffer_size,
+                                        num_queries,
+                                        0,
+                                        sample_filter,
+                                        stream);
 
       result_indices_ptr   = result_indices.data() + (1 - (iter & 0x1)) * result_buffer_size;
       result_distances_ptr = result_distances.data() + (1 - (iter & 0x1)) * result_buffer_size;

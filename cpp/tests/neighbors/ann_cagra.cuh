@@ -1533,4 +1533,29 @@ const std::vector<AnnCagraInputs> inputs           = generate_inputs();
 const std::vector<AnnCagraInputs> inputs_addnode   = generate_addnode_inputs();
 const std::vector<AnnCagraInputs> inputs_filtering = generate_filtering_inputs();
 
+inline std::vector<AnnCagraInputs> generate_kernel_check()
+{
+  // Charge graph dim, search algo
+  std::vector<AnnCagraInputs> inputs = raft::util::itertools::product<AnnCagraInputs>(
+    {1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000,
+     1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000},  // n_queries
+    {10000},                                                       // n_rows
+    {128},                                                         // dim
+    {16},                                                          // k
+    {graph_build_algo::NN_DESCENT},
+    {search_algo::SINGLE_CTA},
+    {0},    // max_queries <- try changing this
+    {0},    // team_size
+    {256},  // itopk_size
+    {1},    // search_width
+    {cuvs::distance::DistanceType::L2Expanded},
+    {false},  // host_data
+    {true},   // include_serialized_data
+    {0.995});
+
+  return inputs;
+}
+
+const std::vector<AnnCagraInputs> inputs_kernelcheck = generate_kernel_check();
+
 }  // namespace cuvs::neighbors::cagra
