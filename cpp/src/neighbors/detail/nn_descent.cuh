@@ -1,3 +1,4 @@
+
 /*
  * Copyright (c) 2023-2025, NVIDIA CORPORATION.
  *
@@ -49,6 +50,9 @@
 #include <mma.h>
 #include <omp.h>
 
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
 #include <limits>
 #include <optional>
 #include <queue>
@@ -857,6 +861,8 @@ GnndGraph<Index_t>::GnndGraph(raft::resources const& res,
   num_segments = node_degree / segment_size;
   // To save the CPU memory, graph should be allocated by external function
   h_graph = nullptr;
+  std::cout << "node degree " << node_degree << " internal node degree " << internal_node_degree
+            << " num samples " << num_samples << " num_segments " << num_segments << std::endl;
 }
 
 // This is the only operation on the CPU that cannot be overlapped.
@@ -882,6 +888,8 @@ void GnndGraph<Index_t>::sample_graph_new(InternalID_t<Index_t>* new_neighbors, 
   }
 }
 
+// initializing to add diversity to the init
+// functioning as the RP tree init in pynndescent
 template <typename Index_t>
 void GnndGraph<Index_t>::init_random_graph()
 {
@@ -891,7 +899,7 @@ void GnndGraph<Index_t>::init_random_graph()
     std::vector<Index_t> rand_seq((nrow + num_segments - 1) / num_segments);
     std::iota(rand_seq.begin(), rand_seq.end(), 0);
     auto gen = std::default_random_engine{seg_idx};
-    std::shuffle(rand_seq.begin(), rand_seq.end(), gen);
+    std::shuffle(rand_seq.begin(), rand_seq.end(), gen);  // fixed random permutation for
 
 #pragma omp parallel for
     for (size_t i = 0; i < nrow; i++) {
@@ -901,13 +909,14 @@ void GnndGraph<Index_t>::init_random_graph()
       size_t idx              = base_idx;
       size_t self_in_this_seg = 0;
       for (size_t j = 0; j < static_cast<size_t>(segment_size); j++) {
-        Index_t id = rand_seq[idx % rand_seq.size()] * num_segments + seg_idx;
+        Index_t id = rand_seq[idx % rand_seq.size()] * num_segments + seg_idx;  // some random value
         if ((size_t)id == i) {
           idx++;
           id               = rand_seq[idx % rand_seq.size()] * num_segments + seg_idx;
           self_in_this_seg = 1;
         }
 
+        // not sure why we need first half of this condition
         h_neighbor_list[j].id_with_flag() =
           j < (rand_seq.size() - self_in_this_seg) && size_t(id) < nrow
             ? id
@@ -936,13 +945,13 @@ void GnndGraph<Index_t>::sample_graph(bool sample_new)
       for (int k = 0; k < num_segments; k++) {
         auto neighbor = list[k * segment_size + j];
         if ((size_t)neighbor.id() >= nrow) continue;
-        if (!neighbor.is_new()) {
+        if (!neighbor.is_new()) {  // old neighbor
           if (h_list_sizes_old.data_handle()[i].x < num_samples) {
             list_old[h_list_sizes_old.data_handle()[i].x++] = neighbor.id();
           }
-        } else if (sample_new) {
+        } else if (sample_new) {  // neighbor is new and sample_new
           if (h_list_sizes_new.data_handle()[i].x < num_samples) {
-            list[k * segment_size + j].mark_old();
+            list[k * segment_size + j].mark_old();  // we mark this old now that we sample it
             list_new[h_list_sizes_new.data_handle()[i].x++] = neighbor.id();
           }
         }
@@ -954,7 +963,7 @@ void GnndGraph<Index_t>::sample_graph(bool sample_new)
       if (h_list_sizes_old.data_handle()[i].x == num_samples &&
           h_list_sizes_new.data_handle()[i].x == num_samples) {
         break;
-      }
+      }  // stop once we have enough old AND new neighbors
     }
   }
 }
@@ -1109,203 +1118,651 @@ void GNND<Data_t, Index_t>::local_join(cudaStream_t stream, DistEpilogue_t dist_
                                                       dist_epilogue);
 }
 
+// template <typename Data_t, typename Index_t>
+// template <typename DistEpilogue_t>
+// void GNND<Data_t, Index_t>::build(Data_t* data,
+//                                   const Index_t nrow,
+//                                   Index_t* output_graph,
+//                                   bool return_distances,
+//                                   DistData_t* output_distances,
+//                                   DistEpilogue_t dist_epilogue)
+// {
+//   std::cout << "node degree " << build_config_.node_degree << " internal node " <<
+//   build_config_.internal_node_degree << std::endl; using input_t = typename
+//   std::remove_const<Data_t>::type;
+
+//   if (build_config_.metric == cuvsDistanceType::BitwiseHamming &&
+//       !(std::is_same_v<input_t, uint8_t> || std::is_same_v<input_t, int8_t>)) {
+//     RAFT_FAIL(
+//       "Data type needs to be int8 or uint8 for NN Descent to run with BitwiseHamming distance.");
+//   }
+
+//   cudaStream_t stream = raft::resource::get_cuda_stream(res);
+//   nrow_               = nrow;
+//   graph_.nrow         = nrow;
+//   graph_.bloom_filter.set_nrow(nrow);
+//   update_counter_ = 0;
+//   graph_.h_graph  = (InternalID_t<Index_t>*)output_graph;
+//   raft::matrix::fill(res, d_data_.view(), static_cast<__half>(0));
+
+//   cudaPointerAttributes data_ptr_attr;
+//   RAFT_CUDA_TRY(cudaPointerGetAttributes(&data_ptr_attr, data));
+//   size_t batch_size = (data_ptr_attr.devicePointer == nullptr) ? 100000 : nrow_;
+
+//   cuvs::spatial::knn::detail::utils::batch_load_iterator vec_batches{
+//     data, static_cast<size_t>(nrow_), build_config_.dataset_dim, batch_size, stream};
+//   for (auto const& batch : vec_batches) {
+//     preprocess_data_kernel<<<
+//       batch.size(),
+//       raft::warp_size(),
+//       sizeof(Data_t) * ceildiv(build_config_.dataset_dim, static_cast<size_t>(raft::warp_size()))
+//       *
+//         raft::warp_size(),
+//       stream>>>(batch.data(),
+//                 d_data_.data_handle(),
+//                 build_config_.dataset_dim,
+//                 l2_norms_.data_handle(),
+//                 batch.offset(),
+//                 build_config_.metric);
+//   }
+
+//   graph_.clear(); // clearing bloom filter
+//   graph_.init_random_graph(); // this just initializes the h_graph
+//   graph_.sample_graph(true);  // filling in h_graph_old and h_graph_new
+
+//   auto update_and_sample = [&](bool update_graph) {
+//     if (update_graph) {
+//       update_counter_ = 0;
+//       graph_.update_graph(graph_host_buffer_.data_handle(),
+//                           dists_host_buffer_.data_handle(),
+//                           DEGREE_ON_DEVICE,
+//                           update_counter_);
+//       if (update_counter_ < build_config_.termination_threshold * nrow_ *
+//                               build_config_.dataset_dim / counter_interval) {
+//         update_counter_ = -1;
+//       }
+//     }
+//     graph_.sample_graph(false);
+//   };
+
+//   for (size_t it = 0; it < build_config_.max_iterations; it++) {
+//     raft::copy(d_list_sizes_new_.data_handle(),
+//                graph_.h_list_sizes_new.data_handle(),
+//                nrow_,
+//                raft::resource::get_cuda_stream(res));
+//     raft::copy(h_graph_old_.data_handle(),
+//                graph_.h_graph_old.data_handle(),
+//                nrow_ * NUM_SAMPLES,
+//                raft::resource::get_cuda_stream(res));
+//     raft::copy(d_list_sizes_old_.data_handle(),
+//                graph_.h_list_sizes_old.data_handle(),
+//                nrow_,
+//                raft::resource::get_cuda_stream(res));
+//     raft::resource::sync_stream(res);
+
+//     std::thread update_and_sample_thread(update_and_sample, it);
+
+//     RAFT_LOG_DEBUG("# GNND iteraton: %lu / %lu", it + 1, build_config_.max_iterations);
+
+//     // Reuse dists_buffer_ to save GPU memory. graph_buffer_ cannot be reused, because it
+//     // contains some information for local_join.
+//     static_assert(DEGREE_ON_DEVICE * sizeof(*(dists_buffer_.data_handle())) >=
+//                   NUM_SAMPLES * sizeof(*(graph_buffer_.data_handle())));
+//     add_reverse_edges(graph_.h_graph_new.data_handle(),
+//                       h_rev_graph_new_.data_handle(),
+//                       (Index_t*)dists_buffer_.data_handle(),
+//                       d_list_sizes_new_.data_handle(),
+//                       stream);
+//     add_reverse_edges(h_graph_old_.data_handle(),
+//                       h_rev_graph_old_.data_handle(),
+//                       (Index_t*)dists_buffer_.data_handle(),
+//                       d_list_sizes_old_.data_handle(),
+//                       stream);
+
+//     // Tensor operations from `mma.h` are guarded with archicteture
+//     // __CUDA_ARCH__ >= 700. Since RAFT supports compilation for ARCH 600,
+//     // we need to ensure that `local_join_kernel` (which uses tensor) operations
+//     // is not only not compiled, but also a runtime error is presented to the user
+//     auto kernel       = preprocess_data_kernel<input_t>;
+//     void* kernel_ptr  = reinterpret_cast<void*>(kernel);
+//     auto runtime_arch = raft::util::arch::kernel_virtual_arch(kernel_ptr);
+//     auto wmma_range =
+//       raft::util::arch::SM_range(raft::util::arch::SM_70(), raft::util::arch::SM_future());
+
+//     if (wmma_range.contains(runtime_arch)) {
+//       local_join(stream, dist_epilogue);
+//     } else {
+//       THROW("NN_DESCENT cannot be run for __CUDA_ARCH__ < 700");
+//     }
+
+//     update_and_sample_thread.join();
+
+//     if (update_counter_ == -1) { break; }
+//     raft::copy(graph_host_buffer_.data_handle(),
+//                graph_buffer_.data_handle(),
+//                nrow_ * DEGREE_ON_DEVICE,
+//                raft::resource::get_cuda_stream(res));
+//     raft::resource::sync_stream(res);
+//     raft::copy(dists_host_buffer_.data_handle(),
+//                dists_buffer_.data_handle(),
+//                nrow_ * DEGREE_ON_DEVICE,
+//                raft::resource::get_cuda_stream(res));
+
+//     graph_.sample_graph_new(graph_host_buffer_.data_handle(), DEGREE_ON_DEVICE);
+//   }
+
+//   graph_.update_graph(graph_host_buffer_.data_handle(),
+//                       dists_host_buffer_.data_handle(),
+//                       DEGREE_ON_DEVICE,
+//                       update_counter_);
+//   raft::resource::sync_stream(res);
+//   graph_.sort_lists();
+
+//   // Reuse graph_.h_dists as the buffer for shrink the lists in graph
+//   static_assert(sizeof(decltype(*(graph_.h_dists.data_handle()))) >= sizeof(Index_t));
+
+//   if (return_distances) {
+//     auto graph_h_dists = raft::make_host_matrix<DistData_t, int64_t, raft::row_major>(
+//       nrow_, build_config_.output_graph_degree);
+
+// // slice on host
+// #pragma omp parallel for
+//     for (size_t i = 0; i < (size_t)nrow_; i++) {
+//       for (size_t j = 0; j < build_config_.output_graph_degree; j++) {
+//         graph_h_dists(i, j) = graph_.h_dists(i, j);
+//       }
+//     }
+//     raft::copy(output_distances,
+//                graph_h_dists.data_handle(),
+//                nrow_ * build_config_.output_graph_degree,
+//                raft::resource::get_cuda_stream(res));
+
+//     auto output_dist_view = raft::make_device_matrix_view<DistData_t, int64_t, raft::row_major>(
+//       output_distances, nrow_, build_config_.output_graph_degree);
+//     // distance post-processing
+//     bool can_postprocess_dist = std::is_same_v<DistEpilogue_t, raft::identity_op>;
+//     if (build_config_.metric == cuvs::distance::DistanceType::L2SqrtExpanded &&
+//         can_postprocess_dist) {
+//       raft::linalg::map(
+//         res, output_dist_view, raft::sqrt_op{}, raft::make_const_mdspan(output_dist_view));
+//     } else if (!cuvs::distance::is_min_close(build_config_.metric) && can_postprocess_dist) {
+//       // revert negated innerproduct
+//       raft::linalg::map(res,
+//                         output_dist_view,
+//                         raft::mul_const_op<DistData_t>(-1),
+//                         raft::make_const_mdspan(output_dist_view));
+//     }
+//     raft::resource::sync_stream(res);
+//   }
+
+//   Index_t* graph_shrink_buffer = (Index_t*)graph_.h_dists.data_handle();
+
+// #pragma omp parallel for
+//   for (size_t i = 0; i < (size_t)nrow_; i++) {
+//     for (size_t j = 0; j < build_config_.node_degree; j++) {
+//       size_t idx = i * graph_.node_degree + j;
+//       int id     = graph_.h_graph[idx].id();
+//       if (id < static_cast<int>(nrow_)) {
+//         graph_shrink_buffer[i * build_config_.node_degree + j] = id;
+//       } else {
+//         graph_shrink_buffer[i * build_config_.node_degree + j] =
+//           cuvs::neighbors::cagra::detail::device::xorshift64(idx) % nrow_;
+//       }
+//     }
+//   }
+//   graph_.h_graph = nullptr;
+
+// #pragma omp parallel for
+//   for (size_t i = 0; i < (size_t)nrow_; i++) {
+//     for (size_t j = 0; j < build_config_.node_degree; j++) {
+//       output_graph[i * build_config_.node_degree + j] =
+//         graph_shrink_buffer[i * build_config_.node_degree + j];
+//     }
+//   }
+// }
+
+// checked_flagged_heap_push for raw arrays
+template <typename DistT, typename IndexT>
+int checked_flagged_heap_push(
+  DistT* priorities, IndexT* indices, uint8_t* flags, size_t size, DistT p, IndexT n, uint8_t f)
+{
+  if (p >= priorities[0]) return 0;
+
+  for (size_t i = 0; i < size; ++i)
+    if (indices[i] == n) return 0;
+
+  priorities[0] = p;
+  indices[0]    = n;
+  flags[0]      = f;
+
+  size_t i = 0;
+  while (true) {
+    size_t ic1 = 2 * i + 1;
+    size_t ic2 = ic1 + 1;
+    size_t i_swap;
+
+    if (ic1 >= size)
+      break;
+    else if (ic2 >= size) {
+      if (priorities[ic1] > p)
+        i_swap = ic1;
+      else
+        break;
+    } else if (priorities[ic1] >= priorities[ic2]) {
+      if (p < priorities[ic1])
+        i_swap = ic1;
+      else
+        break;
+    } else {
+      if (p < priorities[ic2])
+        i_swap = ic2;
+      else
+        break;
+    }
+
+    priorities[i] = priorities[i_swap];
+    indices[i]    = indices[i_swap];
+    flags[i]      = flags[i_swap];
+
+    i = i_swap;
+  }
+
+  priorities[i] = p;
+  indices[i]    = n;
+  flags[i]      = f;
+
+  return 1;
+}
+
+template <typename DistT, typename IndexT>
+int checked_heap_push(DistT* priorities, IndexT* indices, DistT p, IndexT n, int size)
+{
+  if (p >= priorities[0]) return 0;
+
+  for (int i = 0; i < size; ++i)
+    if (indices[i] == n) return 0;
+
+  priorities[0] = p;
+  indices[0]    = n;
+
+  int i = 0;
+  while (true) {
+    int ic1    = 2 * i + 1;
+    int ic2    = ic1 + 1;
+    int i_swap = -1;
+
+    if (ic1 >= size)
+      break;
+    else if (ic2 >= size) {
+      if (priorities[ic1] > p)
+        i_swap = ic1;
+      else
+        break;
+    } else if (priorities[ic1] >= priorities[ic2]) {
+      if (p < priorities[ic1])
+        i_swap = ic1;
+      else
+        break;
+    } else {
+      if (p < priorities[ic2])
+        i_swap = ic2;
+      else
+        break;
+    }
+
+    std::swap(priorities[i], priorities[i_swap]);
+    std::swap(indices[i], indices[i_swap]);
+    i = i_swap;
+  }
+
+  priorities[i] = p;
+  indices[i]    = n;
+  return 1;
+}
+
+// Euclidean distance between two points
+template <typename Data_t>
+Data_t euclidean_distance(const Data_t* a, const Data_t* b, size_t dim)
+{
+  float sum = 0.0;
+  for (size_t i = 0; i < dim; ++i) {
+    float diff = a[i] - b[i];
+    sum += diff * diff;
+  }
+  return std::sqrt(sum);
+}
+
+// init_random using pointers
+template <typename Data_t, typename DistT, typename IndexT>
+void init_random(size_t n_neighbors,
+                 const Data_t* data,  // flattened: n_vertices * dim
+                 size_t n_vertices,
+                 size_t dim,
+                 DistT* heap_priorities,  // flattened: n_vertices * n_neighbors
+                 IndexT* heap_indices,    // flattened: n_vertices * n_neighbors
+                 uint8_t* heap_flags      // flattened: n_vertices * n_neighbors
+)
+{
+  std::random_device rd;
+  std::mt19937 rng(rd());
+  std::uniform_int_distribution<size_t> dist_idx(0, n_vertices - 1);
+
+  for (size_t i = 0; i < n_vertices; ++i) {
+    if (heap_indices[i * n_neighbors] < 0) {
+      size_t n_valid = 0;
+      for (size_t j = 0; j < n_neighbors; ++j)
+        if (heap_indices[i * n_neighbors + j] >= 0) n_valid++;
+
+      size_t n_to_add = n_neighbors - n_valid;
+
+      for (size_t j = 0; j < n_to_add; ++j) {
+        size_t idx = dist_idx(rng);
+
+        DistT d = euclidean_distance(data + idx * dim, data + i * dim, dim);
+
+        checked_flagged_heap_push(heap_priorities + i * n_neighbors,
+                                  heap_indices + i * n_neighbors,
+                                  heap_flags + i * n_neighbors,
+                                  n_neighbors,
+                                  d,
+                                  static_cast<IndexT>(idx),
+                                  static_cast<uint8_t>(1));
+      }
+    }
+  }
+}
+
+template <typename DistT, typename IndexT>
+void new_build_candidates(IndexT* current_indices,
+                          uint8_t* current_flags,
+                          int n_vertices,
+                          int n_neighbors,
+                          int max_candidates,
+                          IndexT* new_candidate_indices,
+                          DistT* new_candidate_priority,
+                          IndexT* old_candidate_indices,
+                          DistT* old_candidate_priority)
+{
+  // Random generator
+  std::random_device rd;
+  std::mt19937 gen(rd());
+  std::uniform_real_distribution<float> dist(0.0f, 1.0f);
+
+  for (int i = 0; i < n_vertices * max_candidates; ++i) {
+    new_candidate_indices[i]  = -1;
+    new_candidate_priority[i] = std::numeric_limits<DistT>::infinity();
+    old_candidate_indices[i]  = -1;
+    old_candidate_priority[i] = std::numeric_limits<DistT>::infinity();
+  }
+
+  // Iterate over vertices and neighbors sequentially
+  for (int i = 0; i < n_vertices; ++i) {
+    for (int j = 0; j < n_neighbors; ++j) {
+      int idx     = current_indices[i * n_neighbors + j];
+      uint8_t isn = current_flags[i * n_neighbors + j];
+
+      if (idx < 0) continue;
+
+      float d = dist(gen);  // random priority
+
+      if (isn) {
+        checked_heap_push(&new_candidate_priority[i * max_candidates],
+                          &new_candidate_indices[i * max_candidates],
+                          d,
+                          idx,
+                          max_candidates);
+        checked_heap_push(&new_candidate_priority[idx * max_candidates],
+                          &new_candidate_indices[idx * max_candidates],
+                          d,
+                          i,
+                          max_candidates);
+      } else {
+        checked_heap_push(&old_candidate_priority[i * max_candidates],
+                          &old_candidate_indices[i * max_candidates],
+                          d,
+                          idx,
+                          max_candidates);
+        checked_heap_push(&old_candidate_priority[idx * max_candidates],
+                          &old_candidate_indices[idx * max_candidates],
+                          d,
+                          i,
+                          max_candidates);
+      }
+    }
+  }
+
+  // Update flags for new candidates
+  for (int i = 0; i < n_vertices; ++i) {
+    for (int j = 0; j < n_neighbors; ++j) {
+      int idx = current_indices[i * n_neighbors + j];
+      for (int k = 0; k < max_candidates; ++k) {
+        if (new_candidate_indices[i * max_candidates + k] == idx) {
+          current_flags[i * n_neighbors + j] = static_cast<uint8_t>(0);
+          break;
+        }
+      }
+    }
+  }
+}
+
+// Generate graph updates
+template <typename Data_t, typename DistT, typename IndexT>
+int process_graph_updates(IndexT* current_indices,    // [n_vertices * n_neighbors]
+                          DistT* current_priorities,  // [n_vertices * n_neighbors]
+                          uint8_t* current_flags,     // [n_vertices * n_neighbors]
+                          IndexT* new_candidates,     // [n_vertices * max_candidates]
+                          IndexT* old_candidates,     // [n_vertices * max_candidates]
+                          DistT* dist_thresholds,     // [n_vertices]
+                          const Data_t* data,         // [n_vertices * n_features]
+                          size_t n_vertices,
+                          size_t n_neighbors,
+                          size_t max_candidates,
+                          size_t n_features)
+{
+  int count = 0;
+  for (size_t i = 0; i < n_vertices; ++i) {
+    const Data_t* data_i = data + i * n_features;
+
+    // Loop over new candidates
+    for (size_t j = 0; j < max_candidates; ++j) {
+      int p = new_candidates[i * max_candidates + j];
+      if (p < 0) continue;
+
+      const Data_t* data_p = data + p * n_features;
+
+      // Compare with other new candidates
+      for (size_t k = j; k < max_candidates; ++k) {
+        int q = new_candidates[i * max_candidates + k];
+        if (q < 0) continue;
+        const Data_t* data_q = data + q * n_features;
+        DistT d              = euclidean_distance(data_p, data_q, n_features);
+
+        if (d <= dist_thresholds[p] || d <= dist_thresholds[q]) {
+          count += checked_flagged_heap_push(current_priorities + p * n_neighbors,
+                                             current_indices + p * n_neighbors,
+                                             current_flags + p * n_neighbors,
+                                             n_neighbors,
+                                             d,
+                                             q,
+                                             1);
+          count += checked_flagged_heap_push(current_priorities + q * n_neighbors,
+                                             current_indices + q * n_neighbors,
+                                             current_flags + q * n_neighbors,
+                                             n_neighbors,
+                                             d,
+                                             p,
+                                             1);
+        }
+      }
+
+      // Compare with old candidates
+      for (size_t k = 0; k < max_candidates; ++k) {
+        int q = old_candidates[i * max_candidates + k];
+        if (q < 0) continue;
+        const Data_t* data_q = data + q * n_features;
+        DistT d              = euclidean_distance(data_p, data_q, n_features);
+
+        if (d <= dist_thresholds[p] || d <= dist_thresholds[q]) {
+          count += checked_flagged_heap_push(current_priorities + p * n_neighbors,
+                                             current_indices + p * n_neighbors,
+                                             current_flags + p * n_neighbors,
+                                             n_neighbors,
+                                             d,
+                                             q,
+                                             1);
+          count += checked_flagged_heap_push(current_priorities + q * n_neighbors,
+                                             current_indices + q * n_neighbors,
+                                             current_flags + q * n_neighbors,
+                                             n_neighbors,
+                                             d,
+                                             p,
+                                             1);
+        }
+      }
+    }
+  }
+  return count;
+}
+
+template <typename DistT, typename IndexT>
+void siftdown(DistT* heap1, IndexT* heap2, size_t size, size_t elt)
+{
+  while (elt * 2 + 1 < size) {
+    size_t left_child  = elt * 2 + 1;
+    size_t right_child = left_child + 1;
+    size_t swap        = elt;
+
+    if (heap1[swap] < heap1[left_child]) swap = left_child;
+
+    if (right_child < size && heap1[swap] < heap1[right_child]) swap = right_child;
+
+    if (swap == elt) break;
+
+    std::swap(heap1[elt], heap1[swap]);
+    std::swap(heap2[elt], heap2[swap]);
+
+    elt = swap;
+  }
+}
+
+template <typename DistT, typename IndexT>
+void deheap_sort(IndexT* indices, DistT* distances, size_t n_rows, size_t n_neighbors)
+{
+  for (size_t row = 0; row < n_rows; ++row) {
+    IndexT* row_indices  = indices + row * n_neighbors;
+    DistT* row_distances = distances + row * n_neighbors;
+
+    // Iterate from end of row to start
+    for (size_t j = n_neighbors - 1; j > 0; --j) {
+      // Swap root with last element in current heap
+      std::swap(row_indices[0], row_indices[j]);
+      std::swap(row_distances[0], row_distances[j]);
+
+      // Siftdown on reduced heap
+      siftdown(row_distances, row_indices, j, 0);
+    }
+  }
+}
+
 template <typename Data_t, typename Index_t>
 template <typename DistEpilogue_t>
 void GNND<Data_t, Index_t>::build(Data_t* data,
                                   const Index_t nrow,
-                                  Index_t* output_graph,
+                                  Index_t* output_graph,  // int
                                   bool return_distances,
                                   DistData_t* output_distances,
                                   DistEpilogue_t dist_epilogue)
 {
+  std::cout << "nrow is " << nrow << " build_config_.dataset_dim " << build_config_.dataset_dim
+            << " node degree " << build_config_.node_degree << std::endl;
   using input_t = typename std::remove_const<Data_t>::type;
+  if (std::is_same_v<input_t, float>) {
+    std::vector<input_t> data_h(nrow * build_config_.dataset_dim);
+    int max_candidates = 30;
+    auto n_neighbors   = build_config_.node_degree;
 
-  if (build_config_.metric == cuvsDistanceType::BitwiseHamming &&
-      !(std::is_same_v<input_t, uint8_t> || std::is_same_v<input_t, int8_t>)) {
-    RAFT_FAIL(
-      "Data type needs to be int8 or uint8 for NN Descent to run with BitwiseHamming distance.");
-  }
+    std::vector<Index_t> indices(nrow * n_neighbors, -1);
+    std::vector<DistData_t> distances(nrow * n_neighbors,
+                                      std::numeric_limits<DistData_t>::infinity());
+    std::vector<uint8_t> flag(nrow * n_neighbors, 0);
 
-  cudaStream_t stream = raft::resource::get_cuda_stream(res);
-  nrow_               = nrow;
-  graph_.nrow         = nrow;
-  graph_.bloom_filter.set_nrow(nrow);
-  update_counter_ = 0;
-  graph_.h_graph  = (InternalID_t<Index_t>*)output_graph;
-  raft::matrix::fill(res, d_data_.view(), static_cast<__half>(0));
-
-  cudaPointerAttributes data_ptr_attr;
-  RAFT_CUDA_TRY(cudaPointerGetAttributes(&data_ptr_attr, data));
-  size_t batch_size = (data_ptr_attr.devicePointer == nullptr) ? 100000 : nrow_;
-
-  cuvs::spatial::knn::detail::utils::batch_load_iterator vec_batches{
-    data, static_cast<size_t>(nrow_), build_config_.dataset_dim, batch_size, stream};
-  for (auto const& batch : vec_batches) {
-    preprocess_data_kernel<<<
-      batch.size(),
-      raft::warp_size(),
-      sizeof(Data_t) * ceildiv(build_config_.dataset_dim, static_cast<size_t>(raft::warp_size())) *
-        raft::warp_size(),
-      stream>>>(batch.data(),
-                d_data_.data_handle(),
+    init_random(n_neighbors,
+                data,
+                nrow,
                 build_config_.dataset_dim,
-                l2_norms_.data_handle(),
-                batch.offset(),
-                build_config_.metric);
-  }
+                distances.data(),
+                indices.data(),
+                flag.data());
 
-  graph_.clear();
-  graph_.init_random_graph();
-  graph_.sample_graph(true);
+    raft::print_host_vector("distances", distances.data(), 10, std::cout);
+    raft::print_host_vector("indices", indices.data(), 10, std::cout);
 
-  auto update_and_sample = [&](bool update_graph) {
-    if (update_graph) {
-      update_counter_ = 0;
-      graph_.update_graph(graph_host_buffer_.data_handle(),
-                          dists_host_buffer_.data_handle(),
-                          DEGREE_ON_DEVICE,
-                          update_counter_);
-      if (update_counter_ < build_config_.termination_threshold * nrow_ *
-                              build_config_.dataset_dim / counter_interval) {
-        update_counter_ = -1;
+    std::vector<Index_t> new_candidate_indices(nrow * max_candidates, -1);
+    std::vector<DistData_t> new_candidate_priority(nrow * max_candidates,
+                                                   std::numeric_limits<DistData_t>::infinity());
+    std::vector<Index_t> old_candidate_indices(nrow * max_candidates, -1);
+    std::vector<DistData_t> old_candidate_priority(nrow * max_candidates,
+                                                   std::numeric_limits<DistData_t>::infinity());
+
+    std::vector<DistData_t> dist_thresholds(nrow, 0);
+
+    for (size_t iter = 0; iter < build_config_.max_iterations; iter++) {
+      std::cout << "running iter " << iter << std::endl;
+      new_build_candidates(indices.data(),
+                           flag.data(),
+                           nrow,
+                           n_neighbors,
+                           max_candidates,
+                           new_candidate_indices.data(),
+                           new_candidate_priority.data(),
+                           old_candidate_indices.data(),
+                           old_candidate_priority.data());
+
+      // make dist_thresholds
+
+      for (int i = 0; i < nrow; ++i) {
+        const DistData_t* heap_i = distances.data() + i * n_neighbors;
+        // Since this is a max heap, the largest distance is at index 0
+        dist_thresholds[i] = heap_i[0];
       }
+
+      int num_updated = process_graph_updates(indices.data(),
+                                              distances.data(),
+                                              flag.data(),
+                                              new_candidate_indices.data(),
+                                              old_candidate_indices.data(),
+                                              dist_thresholds.data(),
+                                              data,
+                                              nrow,
+                                              n_neighbors,
+                                              max_candidates,
+                                              build_config_.dataset_dim);
+      std::cout << "\tnum_updated " << num_updated << std::endl;
+      if (num_updated < 0.001 * n_neighbors * nrow) { break; }
     }
-    graph_.sample_graph(false);
-  };
+    std::cout << "done running!!!\n";
 
-  for (size_t it = 0; it < build_config_.max_iterations; it++) {
-    raft::copy(d_list_sizes_new_.data_handle(),
-               graph_.h_list_sizes_new.data_handle(),
-               nrow_,
-               raft::resource::get_cuda_stream(res));
-    raft::copy(h_graph_old_.data_handle(),
-               graph_.h_graph_old.data_handle(),
-               nrow_ * NUM_SAMPLES,
-               raft::resource::get_cuda_stream(res));
-    raft::copy(d_list_sizes_old_.data_handle(),
-               graph_.h_list_sizes_old.data_handle(),
-               nrow_,
-               raft::resource::get_cuda_stream(res));
-    raft::resource::sync_stream(res);
+    deheap_sort(indices.data(), distances.data(), nrow, n_neighbors);
 
-    std::thread update_and_sample_thread(update_and_sample, it);
+    raft::copy(
+      output_graph, indices.data(), nrow * n_neighbors, raft::resource::get_cuda_stream(res));
 
-    RAFT_LOG_DEBUG("# GNND iteraton: %lu / %lu", it + 1, build_config_.max_iterations);
+    raft::print_host_vector("indices result in nnd", indices.data(), n_neighbors, std::cout);
+    raft::print_host_vector("indices distances in nnd", distances.data(), n_neighbors, std::cout);
 
-    // Reuse dists_buffer_ to save GPU memory. graph_buffer_ cannot be reused, because it
-    // contains some information for local_join.
-    static_assert(DEGREE_ON_DEVICE * sizeof(*(dists_buffer_.data_handle())) >=
-                  NUM_SAMPLES * sizeof(*(graph_buffer_.data_handle())));
-    add_reverse_edges(graph_.h_graph_new.data_handle(),
-                      h_rev_graph_new_.data_handle(),
-                      (Index_t*)dists_buffer_.data_handle(),
-                      d_list_sizes_new_.data_handle(),
-                      stream);
-    add_reverse_edges(h_graph_old_.data_handle(),
-                      h_rev_graph_old_.data_handle(),
-                      (Index_t*)dists_buffer_.data_handle(),
-                      d_list_sizes_old_.data_handle(),
-                      stream);
-
-    // Tensor operations from `mma.h` are guarded with archicteture
-    // __CUDA_ARCH__ >= 700. Since RAFT supports compilation for ARCH 600,
-    // we need to ensure that `local_join_kernel` (which uses tensor) operations
-    // is not only not compiled, but also a runtime error is presented to the user
-    auto kernel       = preprocess_data_kernel<input_t>;
-    void* kernel_ptr  = reinterpret_cast<void*>(kernel);
-    auto runtime_arch = raft::util::arch::kernel_virtual_arch(kernel_ptr);
-    auto wmma_range =
-      raft::util::arch::SM_range(raft::util::arch::SM_70(), raft::util::arch::SM_future());
-
-    if (wmma_range.contains(runtime_arch)) {
-      local_join(stream, dist_epilogue);
-    } else {
-      THROW("NN_DESCENT cannot be run for __CUDA_ARCH__ < 700");
-    }
-
-    update_and_sample_thread.join();
-
-    if (update_counter_ == -1) { break; }
-    raft::copy(graph_host_buffer_.data_handle(),
-               graph_buffer_.data_handle(),
-               nrow_ * DEGREE_ON_DEVICE,
-               raft::resource::get_cuda_stream(res));
-    raft::resource::sync_stream(res);
-    raft::copy(dists_host_buffer_.data_handle(),
-               dists_buffer_.data_handle(),
-               nrow_ * DEGREE_ON_DEVICE,
-               raft::resource::get_cuda_stream(res));
-
-    graph_.sample_graph_new(graph_host_buffer_.data_handle(), DEGREE_ON_DEVICE);
-  }
-
-  graph_.update_graph(graph_host_buffer_.data_handle(),
-                      dists_host_buffer_.data_handle(),
-                      DEGREE_ON_DEVICE,
-                      update_counter_);
-  raft::resource::sync_stream(res);
-  graph_.sort_lists();
-
-  // Reuse graph_.h_dists as the buffer for shrink the lists in graph
-  static_assert(sizeof(decltype(*(graph_.h_dists.data_handle()))) >= sizeof(Index_t));
-
-  if (return_distances) {
-    auto graph_h_dists = raft::make_host_matrix<DistData_t, int64_t, raft::row_major>(
-      nrow_, build_config_.output_graph_degree);
-
-// slice on host
-#pragma omp parallel for
-    for (size_t i = 0; i < (size_t)nrow_; i++) {
+    std::vector<DistData_t> distances_trim(nrow * build_config_.output_graph_degree);
+    for (int i = 0; i < nrow; i++) {
       for (size_t j = 0; j < build_config_.output_graph_degree; j++) {
-        graph_h_dists(i, j) = graph_.h_dists(i, j);
+        distances_trim[i * build_config_.output_graph_degree + j] = distances[i * n_neighbors + j];
       }
     }
     raft::copy(output_distances,
-               graph_h_dists.data_handle(),
-               nrow_ * build_config_.output_graph_degree,
+               distances_trim.data(),
+               nrow * build_config_.output_graph_degree,
                raft::resource::get_cuda_stream(res));
 
-    auto output_dist_view = raft::make_device_matrix_view<DistData_t, int64_t, raft::row_major>(
-      output_distances, nrow_, build_config_.output_graph_degree);
-    // distance post-processing
-    bool can_postprocess_dist = std::is_same_v<DistEpilogue_t, raft::identity_op>;
-    if (build_config_.metric == cuvs::distance::DistanceType::L2SqrtExpanded &&
-        can_postprocess_dist) {
-      raft::linalg::map(
-        res, output_dist_view, raft::sqrt_op{}, raft::make_const_mdspan(output_dist_view));
-    } else if (!cuvs::distance::is_min_close(build_config_.metric) && can_postprocess_dist) {
-      // revert negated innerproduct
-      raft::linalg::map(res,
-                        output_dist_view,
-                        raft::mul_const_op<DistData_t>(-1),
-                        raft::make_const_mdspan(output_dist_view));
-    }
-    raft::resource::sync_stream(res);
-  }
-
-  Index_t* graph_shrink_buffer = (Index_t*)graph_.h_dists.data_handle();
-
-#pragma omp parallel for
-  for (size_t i = 0; i < (size_t)nrow_; i++) {
-    for (size_t j = 0; j < build_config_.node_degree; j++) {
-      size_t idx = i * graph_.node_degree + j;
-      int id     = graph_.h_graph[idx].id();
-      if (id < static_cast<int>(nrow_)) {
-        graph_shrink_buffer[i * build_config_.node_degree + j] = id;
-      } else {
-        graph_shrink_buffer[i * build_config_.node_degree + j] =
-          cuvs::neighbors::cagra::detail::device::xorshift64(idx) % nrow_;
-      }
-    }
-  }
-  graph_.h_graph = nullptr;
-
-#pragma omp parallel for
-  for (size_t i = 0; i < (size_t)nrow_; i++) {
-    for (size_t j = 0; j < build_config_.node_degree; j++) {
-      output_graph[i * build_config_.node_degree + j] =
-        graph_shrink_buffer[i * build_config_.node_degree + j];
-    }
+  } else {
+    std::cout << "unsupported\n";
   }
 }
 
@@ -1329,7 +1786,7 @@ void build(raft::resources const& res,
 
   auto int_graph =
     raft::make_host_matrix<int, int64_t, raft::row_major>(dataset.extent(0), extended_graph_degree);
-
+  std::cout << "extended graph degree " << extended_graph_degree << std::endl;
   GNND<const T, int> nnd(res, build_config);
 
   if (idx.distances().has_value() || !params.return_distances) {
