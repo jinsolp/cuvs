@@ -237,7 +237,7 @@ class GNND {
   size_t nrow_;
   size_t ndim_;
 
-  raft::device_matrix<__half, size_t, raft::row_major> d_data_;
+  raft::device_matrix<float, size_t, raft::row_major> d_data_;
   raft::device_vector<DistData_t, size_t> l2_norms_;
 
   raft::device_matrix<ID_t, size_t, raft::row_major> graph_buffer_;

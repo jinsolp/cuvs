@@ -186,7 +186,7 @@ __device__ __forceinline__ void warp_bitonic_sort(T* element_ptr, const int lane
 }
 
 constexpr int TILE_ROW_WIDTH = 64;
-constexpr int TILE_COL_WIDTH = 128;
+constexpr int TILE_COL_WIDTH = 32;
 
 constexpr int NUM_SAMPLES = 32;
 // For now, the max. number of samples is 32, so the sample cache size is fixed
@@ -251,7 +251,7 @@ __device__ __forceinline__ void load_vec(Data_t* vec_buffer,
 template <typename Data_t>
 RAFT_KERNEL preprocess_data_kernel(
   const Data_t* input_data,
-  __half* output_data,
+  float* output_data,
   int dim,
   DistData_t* l2_norms,
   size_t list_offset                  = 0,
@@ -527,7 +527,7 @@ __launch_bounds__(BLOCK_SIZE)
                     const Index_t* rev_graph_old,  // rev old neighbors [nrow x num_sample]
                     const int2* sizes_old,         // int2 [nrow]. x for fwd, y for bwd
                     const int width,
-                    const __half* data,
+                    const float* data,
                     const int data_dim,
                     ID_t* graph,        // output graph [nrow x DEGREE_ON_DEVICE]
                     DistData_t* dists,  // output dists [nrow x DEGREE_ON_DEVICE]
@@ -541,20 +541,21 @@ __launch_bounds__(BLOCK_SIZE)
   using namespace nvcuda;
   __shared__ int s_list[MAX_NUM_BI_SAMPLES * 2];  // 64 * 2. NUM_SAMPLES is 32
 
-  constexpr int APAD = 8;
-  constexpr int BPAD = 8;
+  // constexpr int APAD = 8;
+  // constexpr int BPAD = 8;
   // s_nv holds new neighbors’ vectors, each row is a vector of TILE_COL_WIDTH (128) elements (plus
   // padding (8) for alignment)
-  __shared__ __half s_nv[MAX_NUM_BI_SAMPLES][TILE_COL_WIDTH + APAD];  // New vectors
-  __shared__ __half s_ov[MAX_NUM_BI_SAMPLES][TILE_COL_WIDTH + BPAD];  // Old vectors
-  static_assert(sizeof(float) * MAX_NUM_BI_SAMPLES * SKEWED_MAX_NUM_BI_SAMPLES <=
-                sizeof(__half) * MAX_NUM_BI_SAMPLES * (TILE_COL_WIDTH + BPAD));
+  __shared__ float s_nv[MAX_NUM_BI_SAMPLES][TILE_COL_WIDTH];                     // New vectors
+  __shared__ float s_ov[MAX_NUM_BI_SAMPLES][TILE_COL_WIDTH];                     // Old vectors
+  __shared__ float s_distances[MAX_NUM_BI_SAMPLES * SKEWED_MAX_NUM_BI_SAMPLES];  // Old vectors
+  // static_assert(sizeof(float) * MAX_NUM_BI_SAMPLES * SKEWED_MAX_NUM_BI_SAMPLES <=
+  //               sizeof(float) * MAX_NUM_BI_SAMPLES * (TILE_COL_WIDTH + BPAD));
   // s_distances: MAX_NUM_BI_SAMPLES x SKEWED_MAX_NUM_BI_SAMPLES, reuse the space of s_ov
 
   // 4 * MAX_NUM_BI_SAMPLES x SKEWED_MAX_NUM_BI_SAMPLES == 2 * MAX_NUM_BI_SAMPLES * (TILE_COL_WIDTH
   // + APAD)
-  float* s_distances =
-    (float*)&s_ov[0][0];  // perfectly works for MAX_NUM_BI_SAMPLES x SKEWED_MAX_NUM_BI_SAMPLES
+  // float* s_distances =
+  //   (float*)&s_ov[0][0];  // perfectly works for MAX_NUM_BI_SAMPLES x SKEWED_MAX_NUM_BI_SAMPLES
   int* s_unique_counter = (int*)&s_ov[0][0];
 
   if (threadIdx.x == 0) {
@@ -627,19 +628,69 @@ __launch_bounds__(BLOCK_SIZE)
   constexpr int num_warps = BLOCK_SIZE / raft::warp_size();  // 16
 
   // This is a 2D tiling of warps: 16 warps are arranged as a 4×4 grid
-  int warp_id_y = warp_id / 4;
-  int warp_id_x = warp_id % 4;
+  // int warp_id_y = warp_id / 4;
+  // int warp_id_x = warp_id % 4;
 
   // CUDA Tensor Core fragments: small pieces of matrices loaded into registers for fast
   // multiply-accumulate. a_frag is row-major, b_frag is column-major. c_frag accumulates the result
   // in FP32.
-  wmma::fragment<wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, half, wmma::row_major> a_frag;
-  wmma::fragment<wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, half, wmma::col_major> b_frag;
-  wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float> c_frag;
-  if (metric != cuvs::distance::DistanceType::BitwiseHamming) {
-    wmma::fill_fragment(c_frag, 0.0);  // initialize accumulator to 0
+  // wmma::fragment<wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, float, wmma::row_major> a_frag;
+  // wmma::fragment<wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, float, wmma::col_major> b_frag;
+  // wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float> c_frag;
+  //   if (metric != cuvs::distance::DistanceType::BitwiseHamming) {
+  //     wmma::fill_fragment(c_frag, 0.0);  // initialize accumulator to 0
 
-    // The vectors are split into tiles of width TILE_COL_WIDTH to fit in shared memory.
+  //     // The vectors are split into tiles of width TILE_COL_WIDTH to fit in shared memory.
+  //     for (int step = 0; step < raft::ceildiv(data_dim, TILE_COL_WIDTH); step++) {
+  //       int num_load_elems = (step == raft::ceildiv(data_dim, TILE_COL_WIDTH) - 1)
+  //                              ? data_dim - step * TILE_COL_WIDTH
+  //                              : TILE_COL_WIDTH;
+  //       // Each warp loads multiple new neighbors’ vectors from global memory into shared memory
+  //       s_nv
+  //       // in a tiled and lane-parallel fashion. load_vec ensures that each thread in a warp
+  //       loads
+  //       // part of a vector.
+  // #pragma unroll
+  //       for (int i = 0; i < MAX_NUM_BI_SAMPLES / num_warps; i++) {
+  //         int idx = i * num_warps + warp_id;
+  //         if (idx < list_new_size) {
+  //           size_t neighbor_id = new_neighbors[idx];
+  //           size_t idx_in_data = neighbor_id * data_dim;
+  //           load_vec(s_nv[idx],
+  //                    data + idx_in_data + step * TILE_COL_WIDTH,
+  //                    num_load_elems,
+  //                    TILE_COL_WIDTH,
+  //                    lane_id);
+  //         }
+  //       }
+  //       __syncthreads();
+
+  //       for (int i = 0; i < TILE_COL_WIDTH / WMMA_K; i++) {
+  //         wmma::load_matrix_sync(
+  //           a_frag, s_nv[warp_id_y * WMMA_M] + i * WMMA_K, TILE_COL_WIDTH + APAD);
+  //         wmma::load_matrix_sync(
+  //           b_frag, s_nv[warp_id_x * WMMA_N] + i * WMMA_K, TILE_COL_WIDTH + BPAD);
+  //         wmma::mma_sync(c_frag, a_frag, b_frag, c_frag);
+  //         __syncthreads();
+  //       }
+  //     }
+
+  //     wmma::store_matrix_sync(
+  //       s_distances + warp_id_y * WMMA_M * SKEWED_MAX_NUM_BI_SAMPLES + warp_id_x * WMMA_N,
+  //       c_frag,
+  //       SKEWED_MAX_NUM_BI_SAMPLES,
+  //       wmma::mem_row_major);
+  //   }
+
+  // Zero out distance matrix
+  if (metric != cuvs::distance::DistanceType::BitwiseHamming) {
+    int tid = threadIdx.x;
+    for (int i = tid; i < MAX_NUM_BI_SAMPLES * SKEWED_MAX_NUM_BI_SAMPLES; i += blockDim.x)
+      s_distances[i] = 0.0f;
+
+    __syncthreads();
+
+    // Loop over tiles of the vector dimension
     for (int step = 0; step < raft::ceildiv(data_dim, TILE_COL_WIDTH); step++) {
       int num_load_elems = (step == raft::ceildiv(data_dim, TILE_COL_WIDTH) - 1)
                              ? data_dim - step * TILE_COL_WIDTH
@@ -659,24 +710,22 @@ __launch_bounds__(BLOCK_SIZE)
                    TILE_COL_WIDTH,
                    lane_id);
         }
-      }
+      }  // loaded vectors
       __syncthreads();
 
-      for (int i = 0; i < TILE_COL_WIDTH / WMMA_K; i++) {
-        wmma::load_matrix_sync(
-          a_frag, s_nv[warp_id_y * WMMA_M] + i * WMMA_K, TILE_COL_WIDTH + APAD);
-        wmma::load_matrix_sync(
-          b_frag, s_nv[warp_id_x * WMMA_N] + i * WMMA_K, TILE_COL_WIDTH + BPAD);
-        wmma::mma_sync(c_frag, a_frag, b_frag, c_frag);
-        __syncthreads();
+      if (tid == 0) {
+        for (int row = 0; row < list_new_size; row++) {
+          for (int col = 0; col < list_new_size; col++) {
+            float acc = 0.0f;
+            for (int d = 0; d < num_load_elems; d++) {
+              acc += s_nv[row][d] * s_nv[col][d];
+            }
+            s_distances[row * SKEWED_MAX_NUM_BI_SAMPLES + col] += acc;
+          }
+        }
       }
+      __syncthreads();
     }
-
-    wmma::store_matrix_sync(
-      s_distances + warp_id_y * WMMA_M * SKEWED_MAX_NUM_BI_SAMPLES + warp_id_x * WMMA_N,
-      c_frag,
-      SKEWED_MAX_NUM_BI_SAMPLES,
-      wmma::mem_row_major);
   }
   __syncthreads();
 
@@ -718,6 +767,7 @@ __launch_bounds__(BLOCK_SIZE)
       s_distances[i] = std::numeric_limits<float>::max();
     }
   }
+
   __syncthreads();
   // at this point s_distances contains the final distances ready for selection of nearest
   // neighbors.
@@ -772,7 +822,13 @@ __launch_bounds__(BLOCK_SIZE)
   // }
 
   if (metric != cuvs::distance::DistanceType::BitwiseHamming) {
-    wmma::fill_fragment(c_frag, 0.0);
+    // wmma::fill_fragment(c_frag, 0.0);
+    int tid = threadIdx.x;
+    for (int i = tid; i < MAX_NUM_BI_SAMPLES * SKEWED_MAX_NUM_BI_SAMPLES; i += blockDim.x)
+      s_distances[i] = 0.0f;
+
+    __syncthreads();
+
     for (int step = 0; step < raft::ceildiv(data_dim, TILE_COL_WIDTH); step++) {
       int num_load_elems = (step == raft::ceildiv(data_dim, TILE_COL_WIDTH) - 1)
                              ? data_dim - step * TILE_COL_WIDTH
@@ -819,23 +875,37 @@ __launch_bounds__(BLOCK_SIZE)
       }
       __syncthreads();
 
-      for (int i = 0; i < TILE_COL_WIDTH / WMMA_K; i++) {
-        wmma::load_matrix_sync(
-          a_frag, s_nv[warp_id_y * WMMA_M] + i * WMMA_K, TILE_COL_WIDTH + APAD);
-        wmma::load_matrix_sync(
-          b_frag, s_ov[warp_id_x * WMMA_N] + i * WMMA_K, TILE_COL_WIDTH + BPAD);
-        wmma::mma_sync(c_frag, a_frag, b_frag, c_frag);
-        __syncthreads();
-      }
-    }
+      // for (int i = 0; i < TILE_COL_WIDTH / WMMA_K; i++) {
+      //   wmma::load_matrix_sync(
+      //     a_frag, s_nv[warp_id_y * WMMA_M] + i * WMMA_K, TILE_COL_WIDTH + APAD);
+      //   wmma::load_matrix_sync(
+      //     b_frag, s_ov[warp_id_x * WMMA_N] + i * WMMA_K, TILE_COL_WIDTH + BPAD);
+      //   wmma::mma_sync(c_frag, a_frag, b_frag, c_frag);
+      //   __syncthreads();
+      // }
 
-    wmma::store_matrix_sync(
-      s_distances + warp_id_y * WMMA_M * SKEWED_MAX_NUM_BI_SAMPLES + warp_id_x * WMMA_N,
-      c_frag,
-      SKEWED_MAX_NUM_BI_SAMPLES,
-      wmma::mem_row_major);
-    __syncthreads();
+      if (tid == 0) {
+        for (int row = 0; row < list_new_size; row++) {
+          for (int col = 0; col < list_old_size; col++) {
+            float acc = 0.0f;
+            for (int d = 0; d < num_load_elems; d++) {
+              acc += s_nv[row][d] * s_ov[col][d];
+            }
+            s_distances[row * SKEWED_MAX_NUM_BI_SAMPLES + col] += acc;
+          }
+        }
+      }
+      __syncthreads();
+    }
   }
+
+  //   wmma::store_matrix_sync(
+  //     s_distances + warp_id_y * WMMA_M * SKEWED_MAX_NUM_BI_SAMPLES + warp_id_x * WMMA_N,
+  //     c_frag,
+  //     SKEWED_MAX_NUM_BI_SAMPLES,
+  //     wmma::mem_row_major);
+  //   __syncthreads();
+  // }
 
   for (int i = threadIdx.x; i < MAX_NUM_BI_SAMPLES * SKEWED_MAX_NUM_BI_SAMPLES; i += blockDim.x) {
     int col_id = i % SKEWED_MAX_NUM_BI_SAMPLES;  // old
@@ -853,17 +923,9 @@ __launch_bounds__(BLOCK_SIZE)
       //   s_distances[i], static_cast<float>(l2_norms[new_neighbors[row_id]]),
       //   static_cast<float>(l2_norms[old_neighbors[col_id]]));
       // }
-      if ((new_neighbors[row_id] == 2 && old_neighbors[col_id] == 9824) ||
-          (new_neighbors[row_id] == 9824 && old_neighbors[col_id] == 2)) {
-        printf("in row %d (2,9824) dist %f l2 norm [%f, %f]\n",
-               static_cast<int>(blockIdx.x),
-               s_distances[i],
-               static_cast<float>(l2_norms[new_neighbors[row_id]]),
-               static_cast<float>(l2_norms[old_neighbors[col_id]]));
-      }
-      if ((new_neighbors[row_id] == 2 && old_neighbors[col_id] == 6154) ||
-          (new_neighbors[row_id] == 6154 && old_neighbors[col_id] == 2)) {
-        printf("in row %d (2,6154) dist %f l2 norm [%f, %f]\n",
+      if ((new_neighbors[row_id] == 2 && old_neighbors[col_id] == 4860) ||
+          (new_neighbors[row_id] == 4860 && old_neighbors[col_id] == 2)) {
+        printf("in row %d (2,4860) dist %f l2 norm [%f, %f]\n",
                static_cast<int>(blockIdx.x),
                s_distances[i],
                static_cast<float>(l2_norms[new_neighbors[row_id]]),
@@ -1259,7 +1321,7 @@ GNND<Data_t, Index_t>::GNND(raft::resources const& res, const BuildConfig& build
            NUM_SAMPLES),
     nrow_(build_config.max_dataset_size),
     ndim_(build_config.dataset_dim),
-    d_data_{raft::make_device_matrix<__half, size_t, raft::row_major>(
+    d_data_{raft::make_device_matrix<float, size_t, raft::row_major>(
       res,
       nrow_,
       build_config.metric == cuvs::distance::DistanceType::BitwiseHamming
@@ -2117,7 +2179,7 @@ void GNND<Data_t, Index_t>::build(Data_t* data,
   graph_.bloom_filter.set_nrow(nrow);
   update_counter_ = 0;
   graph_.h_graph  = (InternalID_t<Index_t>*)output_graph;
-  raft::matrix::fill(res, d_data_.view(), static_cast<__half>(0));
+  raft::matrix::fill(res, d_data_.view(), static_cast<float>(0));
 
   cudaPointerAttributes data_ptr_attr;
   RAFT_CUDA_TRY(cudaPointerGetAttributes(&data_ptr_attr, data));
@@ -2139,8 +2201,15 @@ void GNND<Data_t, Index_t>::build(Data_t* data,
                 build_config_.metric);
   }
 
+  cudaDeviceSynchronize();
+  raft::print_device_vector("data0", d_data_.data_handle(), build_config_.dataset_dim, std::cout);
+  raft::print_device_vector("data1",
+                            d_data_.data_handle() + build_config_.dataset_dim,
+                            build_config_.dataset_dim,
+                            std::cout);
+
   if (std::is_same_v<input_t, float>) {
-    std::vector<input_t> data_h(nrow * build_config_.dataset_dim);
+    // std::vector<input_t> data_h(nrow * build_config_.dataset_dim);
     auto n_neighbors = build_config_.node_degree;
 
     graph_.init_random_graph();
@@ -2161,18 +2230,18 @@ void GNND<Data_t, Index_t>::build(Data_t* data,
       // h_graph_old and h_graph_new is filled with forward edges
       // h_list_sizes_new.x h_list_sizes_old.x is filled with corresponding sizes
 
-      raft::print_host_vector("h_graph_new after sampling",
-                              graph_.h_graph_new.data_handle() + 2 * NUM_SAMPLES,
-                              NUM_SAMPLES,
-                              std::cout);
-      raft::print_host_vector("h_graph_old after sampling",
-                              graph_.h_graph_old.data_handle() + 2 * NUM_SAMPLES,
-                              NUM_SAMPLES,
-                              std::cout);
-      print_host_int2_vector(
-        "h_list_sizes_new fwd edge", graph_.h_list_sizes_new.data_handle(), 10, 0, std::cout);
-      print_host_int2_vector(
-        "h_list_sizes_old fwd edge", graph_.h_list_sizes_old.data_handle(), 10, 0, std::cout);
+      // raft::print_host_vector("h_graph_new after sampling",
+      //                         graph_.h_graph_new.data_handle() + 2 * NUM_SAMPLES,
+      //                         NUM_SAMPLES,
+      //                         std::cout);
+      // raft::print_host_vector("h_graph_old after sampling",
+      //                         graph_.h_graph_old.data_handle() + 2 * NUM_SAMPLES,
+      //                         NUM_SAMPLES,
+      //                         std::cout);
+      // print_host_int2_vector(
+      //   "h_list_sizes_new fwd edge", graph_.h_list_sizes_new.data_handle(), 10, 0, std::cout);
+      // print_host_int2_vector(
+      //   "h_list_sizes_old fwd edge", graph_.h_list_sizes_old.data_handle(), 10, 0, std::cout);
 
       // copy updated sizes
       raft::copy(
@@ -2193,14 +2262,14 @@ void GNND<Data_t, Index_t>::build(Data_t* data,
                         stream);
       cudaDeviceSynchronize();
 
-      raft::print_host_vector("h_rev_graph_new_ after reverse",
-                              h_rev_graph_new_.data_handle() + 2 * NUM_SAMPLES,
-                              NUM_SAMPLES,
-                              std::cout);
-      raft::print_host_vector("h_rev_graph_old_ after reverse",
-                              h_rev_graph_old_.data_handle() + 2 * NUM_SAMPLES,
-                              NUM_SAMPLES,
-                              std::cout);
+      // raft::print_host_vector("h_rev_graph_new_ after reverse",
+      //                         h_rev_graph_new_.data_handle() + 2 * NUM_SAMPLES,
+      //                         NUM_SAMPLES,
+      //                         std::cout);
+      // raft::print_host_vector("h_rev_graph_old_ after reverse",
+      //                         h_rev_graph_old_.data_handle() + 2 * NUM_SAMPLES,
+      //                         NUM_SAMPLES,
+      //                         std::cout);
 
       // at this point d_list_sizes_new_ and d_list_sizes_old_ have the proper values of all list
       // sizes i.e. .x for forward edges and .y for reverse edges size graph_.h_graph_old and
@@ -2232,14 +2301,14 @@ void GNND<Data_t, Index_t>::build(Data_t* data,
                  raft::resource::get_cuda_stream(res));
 
       cudaDeviceSynchronize();
-      print_host_id_vector("graph_host_buffer_ after local join",
-                           graph_host_buffer_.data_handle() + 2 * DEGREE_ON_DEVICE,
-                           DEGREE_ON_DEVICE,
-                           std::cout);
-      raft::print_host_vector("dists_host_buffer_ after local join",
-                              dists_host_buffer_.data_handle() + 2 * DEGREE_ON_DEVICE,
-                              DEGREE_ON_DEVICE,
-                              std::cout);
+      // print_host_id_vector("graph_host_buffer_ after local join",
+      //                      graph_host_buffer_.data_handle() + 2 * DEGREE_ON_DEVICE,
+      //                      DEGREE_ON_DEVICE,
+      //                      std::cout);
+      // raft::print_host_vector("dists_host_buffer_ after local join",
+      //                         dists_host_buffer_.data_handle() + 2 * DEGREE_ON_DEVICE,
+      //                         DEGREE_ON_DEVICE,
+      //                         std::cout);
 
       // now we have valid sample results on host mirrors
       // we have to now write it back to proper places in h_graph and h_dists
@@ -2251,15 +2320,15 @@ void GNND<Data_t, Index_t>::build(Data_t* data,
                           update_counter_);
       cudaDeviceSynchronize();
       // at this point we have updated h_graph and h_dists (segmented)
-      raft::print_host_vector("updated dist for 2",
-                              graph_.h_dists.data_handle() + 2 * n_neighbors,
-                              n_neighbors,
-                              std::cout);
-      print_host_id_vector(
-        "updated idx for 2", graph_.h_graph + 2 * n_neighbors, n_neighbors, std::cout);
+      // raft::print_host_vector("updated dist for 2",
+      //                         graph_.h_dists.data_handle() + 2 * n_neighbors,
+      //                         n_neighbors,
+      //                         std::cout);
+      // print_host_id_vector(
+      //   "updated idx for 2", graph_.h_graph + 2 * n_neighbors, n_neighbors, std::cout);
 
       std::cout << "num updates: " << update_counter_ << std::endl;
-      if (update_counter_ < 0.001 * n_neighbors * nrow) { break; }
+      if (update_counter_ < 0.0001 * n_neighbors * nrow) { break; }
     }
 
     graph_.sort_lists();
