@@ -301,10 +301,8 @@ inline BuildConfig get_build_config(raft::resources const& res,
   // The elements in each knn-list are partitioned into different buckets, and we need more buckets
   // to mitigate bucket collisions. `intermediate_degree` is OK to larger than
   // extended_graph_degree.
-  extended_graph_degree =
-    roundUp32(static_cast<size_t>(graph_degree * (graph_degree <= 32 ? 1.0 : 1.3)));
-  size_t extended_intermediate_degree =
-    roundUp32(static_cast<size_t>(intermediate_degree * (intermediate_degree <= 32 ? 1.0 : 1.3)));
+  extended_graph_degree               = roundUp32(static_cast<size_t>(graph_degree));
+  size_t extended_intermediate_degree = roundUp32(static_cast<size_t>(intermediate_degree));
 
   BuildConfig build_config{.max_dataset_size      = num_rows,
                            .dataset_dim           = num_cols,
