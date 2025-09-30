@@ -313,6 +313,7 @@ class AnnNNDescentDistEpiTest : public ::testing::TestWithParam<AnnNNDescentInpu
       raft::update_host(distances_naive.data(), distances_naive_dev.data(), queries_size, stream_);
       raft::resource::sync_stream(handle_);
     }
+    std::cout << "done calculating MR for bf\n";
     {
       nn_descent::index_params index_params;
       index_params.metric                    = ps.metric;
@@ -327,6 +328,7 @@ class AnnNNDescentDistEpiTest : public ::testing::TestWithParam<AnnNNDescentInpu
       auto database_host_view = raft::make_host_matrix_view<const DataT, int64_t>(
         (const DataT*)database_host.data_handle(), ps.n_rows, ps.dim);
       auto index = nn_descent::build(handle_, index_params, database_host_view);
+      std::cout << "build index!!\n";
 
       rmm::device_uvector<DistanceT> core_dists_dev(ps.n_rows, stream_);
       cuvs::neighbors::detail::reachability::core_distances<IdxT, DistanceT>(
@@ -336,18 +338,27 @@ class AnnNNDescentDistEpiTest : public ::testing::TestWithParam<AnnNNDescentInpu
         ps.graph_degree,
         ps.n_rows,
         core_dists_dev.data());
+      std::cout << "got core dists!!\n";
 
       size_t extended_graph_degree, graph_degree;
       auto build_config = nn_descent::detail::get_build_config(
         handle_, index_params, ps.n_rows, ps.dim, ps.metric, extended_graph_degree, graph_degree);
+      std::cout << "extended_graph_degree " << extended_graph_degree << " graph_degree "
+                << graph_degree << std::endl;
+      std::cout << "node degree: " << build_config.node_degree << std::endl;
       auto gnnd      = nn_descent::detail::GNND<const DataT, int>(handle_, build_config);
-      auto int_graph = raft::make_host_matrix<int, IdxT, row_major>(
-        ps.n_rows, static_cast<IdxT>(extended_graph_degree));
+      auto int_graph = raft::make_pinned_matrix<int, IdxT>(
+        handle_, ps.n_rows, static_cast<IdxT>(extended_graph_degree));
+      // auto int_graph = raft::make_host_matrix<int, IdxT>(ps.n_rows,
+      // static_cast<IdxT>(extended_graph_degree));
 
       auto dist_epilogue =
         cuvs::neighbors::detail::reachability::ReachabilityPostProcess<int, DataT>{
           core_dists_dev.data(), 1.0, static_cast<size_t>(ps.n_rows)};
+      (void)dist_epilogue;
       rmm::device_uvector<DistanceT> distances_nnd_dev(queries_size, stream_);
+      std::cout << "right before calling nnd build\n";
+
       gnnd.build(database_host.data_handle(),
                  static_cast<int>(ps.n_rows),
                  int_graph.data_handle(),
