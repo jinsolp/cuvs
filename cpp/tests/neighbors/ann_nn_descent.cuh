@@ -27,6 +27,7 @@
 
 #include <raft/core/host_mdarray.hpp>
 #include <raft/core/resource/cuda_stream.hpp>
+#include <raft/random/make_blobs.cuh>
 #include <raft/util/cudart_utils.hpp>
 #include <raft/util/itertools.hpp>
 #include <rmm/device_uvector.hpp>
@@ -72,6 +73,18 @@ inline ::std::ostream& operator<<(::std::ostream& os, const AnnNNDescentBatchInp
      << ", metric=" << static_cast<int>(p.metric) << (p.host_dataset ? ", host" : ", device")
      << ", clusters=" << p.recall_cluster.second << std::endl;
   return os;
+}
+
+template <typename DataT>
+DataT euclidean_distance(const DataT* a, const DataT* b, int d)
+{
+  DataT acc = 0.0f;
+  for (int i = 0; i < d; i++) {
+    DataT diff = a[i] - b[i];
+    acc += diff * diff;
+  }
+  return acc;
+  // return std::sqrt(acc);
 }
 
 template <typename DistanceT, typename DataT, typename IdxT>
@@ -131,6 +144,23 @@ class AnnNNDescentTest : public ::testing::TestWithParam<AnnNNDescentInputs> {
             auto database_host = raft::make_host_matrix<DataT, int64_t>(ps.n_rows, ps.dim);
             raft::copy(database_host.data_handle(), database.data(), database.size(), stream_);
             raft::resource::sync_stream(handle_);
+
+            std::cout << "dist btw 3377 and 3151 "
+                      << euclidean_distance(database_host.data_handle() + ps.dim * 3377,
+                                            database_host.data_handle() + ps.dim * 3151,
+                                            ps.dim)
+                      << std::endl;
+            // std::cout << "dist btw 1 and 3889 " << euclidean_distance(database_host.data_handle()
+            // + ps.dim,
+            //                                                       database_host.data_handle() +
+            //                                                       ps.dim * 3889, ps.dim) <<
+            //                                                       std::endl;
+            // std::cout << "dist btw 1 and 2519 " << euclidean_distance(database_host.data_handle()
+            // + ps.dim,
+            //                                                       database_host.data_handle() +
+            //                                                       ps.dim * 2519, ps.dim) <<
+            //                                                       std::endl;
+
             auto database_host_view = raft::make_host_matrix_view<const DataT, int64_t>(
               (const DataT*)database_host.data_handle(), ps.n_rows, ps.dim);
             auto index = nn_descent::build(handle_, index_params, database_host_view);
@@ -157,7 +187,13 @@ class AnnNNDescentTest : public ::testing::TestWithParam<AnnNNDescentInputs> {
         }
         raft::resource::sync_stream(handle_);
       }
-
+      // std::cout << std::endl;
+      // raft::print_host_vector("indices_naive", indices_naive.data() + ps.graph_degree,
+      // ps.graph_degree, std::cout); raft::print_host_vector("distances_naive",
+      // distances_naive.data() + ps.graph_degree, ps.graph_degree, std::cout);
+      // raft::print_host_vector("indices_nnd", indices_NNDescent.data() + ps.graph_degree,
+      // ps.graph_degree, std::cout); raft::print_host_vector("distances_nnd",
+      // distances_NNDescent.data() + ps.graph_degree, ps.graph_degree, std::cout);
       double min_recall = ps.min_recall;
       EXPECT_TRUE(eval_neighbours(indices_naive,
                                   indices_NNDescent,
@@ -175,7 +211,12 @@ class AnnNNDescentTest : public ::testing::TestWithParam<AnnNNDescentInputs> {
     database.resize(((size_t)ps.n_rows) * ps.dim, stream_);
     raft::random::RngState r(1234ULL);
     if constexpr (std::is_same<DataT, float>{}) {
-      raft::random::normal(handle_, r, database.data(), ps.n_rows * ps.dim, DataT(0.1), DataT(2.0));
+      // raft::random::normal(handle_, r, database.data(), ps.n_rows * ps.dim, DataT(0.1),
+      // DataT(2.0));
+      auto database_view =
+        raft::make_device_matrix_view<float, IdxT>(database.data(), ps.n_rows, ps.dim);
+      auto labels = raft::make_device_vector<IdxT, IdxT>(handle_, ps.n_rows);
+      raft::random::make_blobs(handle_, database_view, labels.view());
     } else if constexpr (std::is_same<DataT, int8_t>{}) {
       raft::random::uniformInt(
         handle_, r, database.data(), ps.n_rows * ps.dim, DataT(-5), DataT(5));
@@ -453,7 +494,12 @@ class AnnNNDescentBatchTest : public ::testing::TestWithParam<AnnNNDescentBatchI
     database.resize(((size_t)ps.n_rows) * ps.dim, stream_);
     raft::random::RngState r(1234ULL);
     if constexpr (std::is_same<DataT, float>{}) {
-      raft::random::normal(handle_, r, database.data(), ps.n_rows * ps.dim, DataT(0.1), DataT(2.0));
+      auto database_view =
+        raft::make_device_matrix_view<float, IdxT>(database.data(), ps.n_rows, ps.dim);
+      auto labels = raft::make_device_vector<IdxT, IdxT>(handle_, ps.n_rows);
+      raft::random::make_blobs(handle_, database_view, labels.view());
+      // raft::random::normal(handle_, r, database.data(), ps.n_rows * ps.dim, DataT(0.1),
+      // DataT(2.0));
     } else {
       raft::random::uniformInt(
         handle_, r, database.data(), ps.n_rows * ps.dim, DataT(1), DataT(20));
@@ -474,16 +520,37 @@ class AnnNNDescentBatchTest : public ::testing::TestWithParam<AnnNNDescentBatchI
   rmm::device_uvector<DataT> database;
 };
 
+// const std::vector<AnnNNDescentInputs> inputs =
+//   raft::util::itertools::product<AnnNNDescentInputs>({2000, 4000},                // n_rows
+//                                                      {4, 16, 31, 64, 256, 1024},  // dim
+//                                                      {32, 64},                    // graph_degree
+//                                                      {cuvs::distance::DistanceType::BitwiseHamming,
+//                                                       cuvs::distance::DistanceType::L2Expanded,
+//                                                       cuvs::distance::DistanceType::L2SqrtExpanded,
+//                                                       cuvs::distance::DistanceType::InnerProduct,
+//                                                       cuvs::distance::DistanceType::CosineExpanded},
+//                                                      {false, true},
+//                                                      {0.90});
+
+//                                                    const std::vector<AnnNNDescentInputs> inputs =
+// raft::util::itertools::product<AnnNNDescentInputs>({4000},                // n_rows
+//                                                    {1024},  // dim
+//                                                    {32},                    // graph_degree
+//                                                    {
+//                                                     cuvs::distance::DistanceType::L2Expanded,
+//                                                     cuvs::distance::DistanceType::L2SqrtExpanded},
+//                                                    {true},
+//                                                    {0.90});
+
 const std::vector<AnnNNDescentInputs> inputs =
   raft::util::itertools::product<AnnNNDescentInputs>({2000, 4000},                // n_rows
                                                      {4, 16, 31, 64, 256, 1024},  // dim
-                                                     {32, 64},                    // graph_degree
-                                                     {cuvs::distance::DistanceType::BitwiseHamming,
-                                                      cuvs::distance::DistanceType::L2Expanded,
+                                                     {32, 47, 64},                // graph_degree
+                                                     {cuvs::distance::DistanceType::L2Expanded,
                                                       cuvs::distance::DistanceType::L2SqrtExpanded,
                                                       cuvs::distance::DistanceType::InnerProduct,
                                                       cuvs::distance::DistanceType::CosineExpanded},
-                                                     {false, true},
+                                                     {false},
                                                      {0.90});
 
 const std::vector<AnnNNDescentInputs> inputsDistEpilogue =

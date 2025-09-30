@@ -22,6 +22,7 @@
 #include "cuvs/distance/distance.h"
 #include "nn_descent_gnnd.hpp"
 
+#include <cstddef>
 #include <cuda_runtime_api.h>
 #include <cuvs/distance/distance.hpp>
 #include <cuvs/neighbors/nn_descent.hpp>
@@ -777,10 +778,10 @@ __launch_bounds__(BLOCK_SIZE)
         }
       }
       s_distances[i] = dist_epilogue(s_distances[i], new_neighbors[row_id], new_neighbors[col_id]);
-      // if ((new_neighbors[row_id] == 1 && new_neighbors[col_id] == 238) ||
-      //     (new_neighbors[row_id] == 238 && new_neighbors[col_id] == 1)) {
+      // if ((new_neighbors[row_id] == 1 && new_neighbors[col_id] == 3377) ||
+      //     (new_neighbors[row_id] == 3377 && new_neighbors[col_id] == 1)) {
       //   printf(
-      //     "in row %d new-new (1, 238) dist %f\n", static_cast<int>(blockIdx.x), s_distances[i]);
+      //     "in row %d new-new (1, 3377) dist %f\n", static_cast<int>(blockIdx.x), s_distances[i]);
       // }
     } else {
       s_distances[i] = std::numeric_limits<float>::max();
@@ -982,10 +983,10 @@ __launch_bounds__(BLOCK_SIZE)
         }
       }
       s_distances[i] = dist_epilogue(s_distances[i], old_neighbors[row_id], new_neighbors[col_id]);
-      // if ((new_neighbors[row_id] == 1 && old_neighbors[col_id] == 238) ||
-      //     (new_neighbors[row_id] == 238 && old_neighbors[col_id] == 1)) {
+      // if ((new_neighbors[row_id] == 1 && old_neighbors[col_id] == 3377) ||
+      //     (new_neighbors[row_id] == 3377 && old_neighbors[col_id] == 1)) {
       //   printf(
-      //     "in row %d old-new (1, 238) dist %f\n", static_cast<int>(blockIdx.x), s_distances[i]);
+      //     "in row %d old-new (1, 3377) dist %f\n", static_cast<int>(blockIdx.x), s_distances[i]);
       // }
     } else {
       s_distances[i] = std::numeric_limits<float>::max();
@@ -2284,7 +2285,8 @@ void GNND<Data_t, Index_t>::build(Data_t* data,
   //                           d_data_.data_handle() + build_config_.dataset_dim,
   //                           build_config_.dataset_dim,
   //                           std::cout);
-  // int target_idx = 1;
+  int target_idx = 1;
+  bool do_print  = false;
   if (std::is_same_v<input_t, float>) {
     // std::vector<input_t> data_h(nrow * build_config_.dataset_dim);
     auto n_neighbors = build_config_.node_degree;
@@ -2293,32 +2295,36 @@ void GNND<Data_t, Index_t>::build(Data_t* data,
     // graph_.h_graph holds segment-based random selected indices now
     // graph_.h_dists also holds float max values
 
-    // raft::print_host_vector("initialized dist for 2",
-    //                         graph_.h_dists.data_handle() + 2 * n_neighbors,
-    //                         n_neighbors,
-    //                         std::cout);
-    // print_host_id_vector(
-    //   "initialized idx for 2", graph_.h_graph + 2 * n_neighbors, n_neighbors, std::cout);
+    if (do_print) {
+      raft::print_host_vector("initialized dist for 2",
+                              graph_.h_dists.data_handle() + 2 * n_neighbors,
+                              n_neighbors,
+                              std::cout);
+      print_host_id_vector(
+        "initialized idx for 2", graph_.h_graph + 2 * n_neighbors, n_neighbors, std::cout);
+    }
 
     for (size_t iter = 0; iter < build_config_.max_iterations; iter++) {
-      // std::cout << "\nrunning iter " << iter << std::endl;
+      if (do_print) { std::cout << "\nrunning iter " << iter << std::endl; }
       graph_.sample_graph(true);
       // we have new and old for forward edges at this point
       // h_graph_old and h_graph_new is filled with forward edges
       // h_list_sizes_new.x h_list_sizes_old.x is filled with corresponding sizes
 
-      // raft::print_host_vector("h_graph_new after sampling",
-      //                         graph_.h_graph_new.data_handle() + target_idx * NUM_SAMPLES,
-      //                         NUM_SAMPLES,
-      //                         std::cout);
-      // raft::print_host_vector("h_graph_old after sampling",
-      //                         graph_.h_graph_old.data_handle() + target_idx * NUM_SAMPLES,
-      //                         NUM_SAMPLES,
-      //                         std::cout);
-      // print_host_int2_vector(
-      //   "h_list_sizes_new fwd edge", graph_.h_list_sizes_new.data_handle(), 10, 0, std::cout);
-      // print_host_int2_vector(
-      //   "h_list_sizes_old fwd edge", graph_.h_list_sizes_old.data_handle(), 10, 0, std::cout);
+      if (do_print) {
+        raft::print_host_vector("h_graph_new after sampling",
+                                graph_.h_graph_new.data_handle() + target_idx * NUM_SAMPLES,
+                                NUM_SAMPLES,
+                                std::cout);
+        raft::print_host_vector("h_graph_old after sampling",
+                                graph_.h_graph_old.data_handle() + target_idx * NUM_SAMPLES,
+                                NUM_SAMPLES,
+                                std::cout);
+        print_host_int2_vector(
+          "h_list_sizes_new fwd edge", graph_.h_list_sizes_new.data_handle(), 10, 0, std::cout);
+        print_host_int2_vector(
+          "h_list_sizes_old fwd edge", graph_.h_list_sizes_old.data_handle(), 10, 0, std::cout);
+      }
 
       // copy updated sizes
       raft::copy(
@@ -2339,14 +2345,16 @@ void GNND<Data_t, Index_t>::build(Data_t* data,
                         stream);
       cudaDeviceSynchronize();
 
-      // raft::print_host_vector("h_rev_graph_new_ after reverse",
-      //                         h_rev_graph_new_.data_handle() + target_idx * NUM_SAMPLES,
-      //                         NUM_SAMPLES,
-      //                         std::cout);
-      // raft::print_host_vector("h_rev_graph_old_ after reverse",
-      //                         h_rev_graph_old_.data_handle() + target_idx * NUM_SAMPLES,
-      //                         NUM_SAMPLES,
-      //                         std::cout);
+      if (do_print) {
+        raft::print_host_vector("h_rev_graph_new_ after reverse",
+                                h_rev_graph_new_.data_handle() + target_idx * NUM_SAMPLES,
+                                NUM_SAMPLES,
+                                std::cout);
+        raft::print_host_vector("h_rev_graph_old_ after reverse",
+                                h_rev_graph_old_.data_handle() + target_idx * NUM_SAMPLES,
+                                NUM_SAMPLES,
+                                std::cout);
+      }
 
       // at this point d_list_sizes_new_ and d_list_sizes_old_ have the proper values of all list
       // sizes i.e. .x for forward edges and .y for reverse edges size graph_.h_graph_old and
@@ -2378,14 +2386,16 @@ void GNND<Data_t, Index_t>::build(Data_t* data,
                  raft::resource::get_cuda_stream(res));
 
       cudaDeviceSynchronize();
-      // print_host_id_vector("graph_host_buffer_ after local join",
-      //                      graph_host_buffer_.data_handle() + target_idx * DEGREE_ON_DEVICE,
-      //                      DEGREE_ON_DEVICE,
-      //                      std::cout);
-      // raft::print_host_vector("dists_host_buffer_ after local join",
-      //                         dists_host_buffer_.data_handle() + target_idx * DEGREE_ON_DEVICE,
-      //                         DEGREE_ON_DEVICE,
-      //                         std::cout);
+      if (do_print) {
+        print_host_id_vector("graph_host_buffer_ after local join",
+                             graph_host_buffer_.data_handle() + target_idx * DEGREE_ON_DEVICE,
+                             DEGREE_ON_DEVICE,
+                             std::cout);
+        raft::print_host_vector("dists_host_buffer_ after local join",
+                                dists_host_buffer_.data_handle() + target_idx * DEGREE_ON_DEVICE,
+                                DEGREE_ON_DEVICE,
+                                std::cout);
+      }
 
       // now we have valid sample results on host mirrors
       // we have to now write it back to proper places in h_graph and h_dists
@@ -2397,15 +2407,65 @@ void GNND<Data_t, Index_t>::build(Data_t* data,
                           update_counter_);
       cudaDeviceSynchronize();
       // at this point we have updated h_graph and h_dists (segmented)
-      // raft::print_host_vector("updated dist",
-      //                         graph_.h_dists.data_handle() + target_idx * n_neighbors,
-      //                         n_neighbors,
-      //                         std::cout);
-      // print_host_id_vector(
-      //   "updated idx", graph_.h_graph + target_idx * n_neighbors, n_neighbors, std::cout);
+      if (do_print) {
+        raft::print_host_vector("updated dist",
+                                graph_.h_dists.data_handle() + target_idx * n_neighbors,
+                                n_neighbors,
+                                std::cout);
+        print_host_id_vector(
+          "updated idx", graph_.h_graph + target_idx * n_neighbors, n_neighbors, std::cout);
 
-      // std::cout << "num updates: " << update_counter_ << std::endl;
-      if (update_counter_ < 0.001 * n_neighbors * nrow) { break; }
+        for (int r = 0; r < nrow; r++) {
+          bool found_target = false;
+          for (size_t c = 0; c < n_neighbors; c++) {
+            if (graph_.h_graph[r * n_neighbors + c].id() == 1) {
+              found_target = true;
+              std::cout << "row " << r << " col " << c << " is 1\n";
+              break;
+            }
+          }
+          if (found_target) {
+            for (size_t c = 0; c < n_neighbors; c++) {
+              if (graph_.h_graph[r * n_neighbors + c].id() == 3151) {
+                std::cout << "\trow " << r << " col " << c << " is 3151\n";
+                break;
+              }
+            }
+          }
+          if (found_target) {
+            for (size_t c = 0; c < n_neighbors; c++) {
+              if (graph_.h_graph[r * n_neighbors + c].id() == 3377) {
+                std::cout << "\trow " << r << " col " << c << " is 3377\n";
+                break;
+              }
+            }
+          }
+          if (found_target) {
+            for (size_t c = 0; c < n_neighbors; c++) {
+              if (graph_.h_graph[r * n_neighbors + c].id() == 3889) {
+                std::cout << "\trow " << r << " col " << c << " is 3889\n";
+                break;
+              }
+            }
+          }
+        }
+
+        print_host_id_vector(
+          "updated idx for 3377", graph_.h_graph + 3377 * n_neighbors, n_neighbors, std::cout);
+        raft::print_host_vector("updated dist for 3377",
+                                graph_.h_dists.data_handle() + 3377 * n_neighbors,
+                                n_neighbors,
+                                std::cout);
+        print_host_id_vector(
+          "updated idx for 3151", graph_.h_graph + 3151 * n_neighbors, n_neighbors, std::cout);
+        raft::print_host_vector("updated dist for 3151",
+                                graph_.h_dists.data_handle() + 3151 * n_neighbors,
+                                n_neighbors,
+                                std::cout);
+
+        std::cout << "num updates: " << update_counter_ << std::endl;
+      }
+      if (update_counter_ < 0.0001 * n_neighbors * nrow) { break; }
     }
 
     graph_.sort_lists();
