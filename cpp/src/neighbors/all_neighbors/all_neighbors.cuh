@@ -130,7 +130,6 @@ void build(
 
   std::unique_ptr<BatchBuildAux<IdxT>> aux_vectors;
   if (params.n_clusters == 1) {
-    std::cout << "single build in params.n_clusters = 1\n";
     single_build(handle, params, dataset, indices, distances);
   } else {
     if (core_distances.has_value()) {

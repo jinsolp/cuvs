@@ -1068,21 +1068,15 @@ int insert_to_ordered_list(InternalID_t<Index_t>* list,
                            DistData_t* dist_list,
                            const int width,
                            const InternalID_t<Index_t> neighb_id,
-                           const DistData_t dist,
-                           bool do_print = false)
+                           const DistData_t dist)
 {
-  if (dist > dist_list[width - 1]) {
-    if (do_print) { std::cout << "Retruning at the very top\n"; }
-    return width;
-  }
+  if (dist > dist_list[width - 1]) { return width; }
 
-  if (do_print) { std::cout << "width is " << width << std::endl; }
   int idx_insert      = width;
   bool position_found = false;
   for (int i = 0; i < width; i++) {
     if ((list[i].id() == neighb_id.id()) &&
         (dist_list[i] != std::numeric_limits<DistData_t>::max())) {
-      if (do_print) { std::cout << "Retruning because we already have this\n"; }
       return width;
     }
     if (!position_found && dist_list[i] > dist) {
@@ -1090,7 +1084,6 @@ int insert_to_ordered_list(InternalID_t<Index_t>* list,
       position_found = true;
     }
   }
-  // if (do_print) {std::cout << "after for loop idx_insert is "<< idx_insert << std::endl;}
   if (idx_insert == width) return idx_insert;
 
   memmove(list + idx_insert + 1, list + idx_insert, sizeof(*list) * (width - idx_insert - 1));
@@ -1138,8 +1131,6 @@ GnndGraph<Index_t>::GnndGraph(raft::resources const& res,
   num_segments = node_degree / segment_size;
   // To save the CPU memory, graph should be allocated by external function
   h_graph = nullptr;
-  // std::cout << "node degree " << node_degree << " internal node degree " << internal_node_degree
-  //           << " num samples " << num_samples << " num_segments " << num_segments << std::endl;
 }
 
 // This is the only operation on the CPU that cannot be overlapped.
@@ -1177,7 +1168,6 @@ void GnndGraph<Index_t>::sample_graph_new(InternalID_t<Index_t>* new_neighbors, 
 template <typename Index_t>
 void GnndGraph<Index_t>::init_random_graph()
 {
-  // std::cout << "initializing random graph. number of segments is " << num_segments << std::endl;
   for (size_t seg_idx = 0; seg_idx < static_cast<size_t>(num_segments); seg_idx++) {
     // random sequence (range: 0~nrow)
     // segment_x stores neighbors which id % num_segments == x
@@ -1326,7 +1316,6 @@ void GnndGraph<Index_t>::update_graph(const InternalID_t<Index_t>* new_neighbors
                                       const size_t width,
                                       std::atomic<int64_t>& update_counter)
 {
-  std::cout << "\tin update_graph width is " << width << std::endl;
 #pragma omp parallel for
   for (size_t i = 0; i < nrow;
        i++) {  // this parallelizes across rows so no worry about race conditions
@@ -1354,7 +1343,6 @@ void GnndGraph<Index_t>::update_graph(const InternalID_t<Index_t>* new_neighbors
       if (i % counter_interval == 0 && insert_pos != segment_size) { update_counter++; }
     }
   }
-  std::cout << "retuning from update_graph\n";
 }
 
 template <typename Index_t>
@@ -2261,7 +2249,6 @@ void GNND<Data_t, Index_t>::build(Data_t* data,
   update_counter_ = 0;
   graph_.h_graph  = (InternalID_t<Index_t>*)output_graph;
   raft::matrix::fill(res, d_data_.view(), static_cast<float>(0));
-  std::cout << "called NN Descent build\n";
 
   cudaPointerAttributes data_ptr_attr;
   RAFT_CUDA_TRY(cudaPointerGetAttributes(&data_ptr_attr, data));
@@ -2284,7 +2271,6 @@ void GNND<Data_t, Index_t>::build(Data_t* data,
   }
 
   cudaDeviceSynchronize();
-  std::cout << "preprocessed data\n";
   // raft::print_device_vector("data0", d_data_.data_handle(), build_config_.dataset_dim,
   // std::cout); raft::print_device_vector("data1",
   //                           d_data_.data_handle() + build_config_.dataset_dim,
@@ -2299,7 +2285,6 @@ void GNND<Data_t, Index_t>::build(Data_t* data,
     graph_.init_random_graph();
     // graph_.h_graph holds segment-based random selected indices now
     // graph_.h_dists also holds float max values
-    std::cout << "initialized random graph\n";
 
     if (do_print) {
       raft::print_host_vector("initialized dist for 2",
@@ -2311,7 +2296,7 @@ void GNND<Data_t, Index_t>::build(Data_t* data,
     }
 
     for (size_t iter = 0; iter < build_config_.max_iterations; iter++) {
-      std::cout << "\nrunning iter " << iter << std::endl;
+      // std::cout << "\nrunning iter " << iter << std::endl;
       graph_.sample_graph(true);
       // we have new and old for forward edges at this point
       // h_graph_old and h_graph_new is filled with forward edges
@@ -2350,7 +2335,6 @@ void GNND<Data_t, Index_t>::build(Data_t* data,
                         d_list_sizes_old_.data_handle(),
                         stream);
       cudaDeviceSynchronize();
-      std::cout << "add_reverse_edges done\n";
 
       if (do_print) {
         raft::print_host_vector("h_rev_graph_new_ after reverse",
@@ -2382,7 +2366,6 @@ void GNND<Data_t, Index_t>::build(Data_t* data,
 
       cudaDeviceSynchronize();
       // at this point we have valid sample results in graph_buffer_ and dists_buffer_
-      std::cout << "local_join done\n";
 
       raft::copy(graph_host_buffer_.data_handle(),
                  graph_buffer_.data_handle(),
@@ -2414,7 +2397,7 @@ void GNND<Data_t, Index_t>::build(Data_t* data,
                           DEGREE_ON_DEVICE,
                           update_counter_);
       cudaDeviceSynchronize();
-      std::cout << "update_graph done\n";
+
       // at this point we have updated h_graph and h_dists (segmented)
       if (do_print) {
         raft::print_host_vector("updated dist",
@@ -2459,7 +2442,7 @@ void GNND<Data_t, Index_t>::build(Data_t* data,
           }
         }
       }
-      std::cout << "num updates: " << update_counter_ << std::endl;
+      // std::cout << "num updates: " << update_counter_ << std::endl;
       if (update_counter_ < 0.0001 * n_neighbors * nrow) { break; }
     }
 
@@ -2532,7 +2515,6 @@ void build(raft::resources const& res,
            raft::mdspan<const T, raft::matrix_extent<int64_t>, raft::row_major, Accessor> dataset,
            index<IdxT>& idx)
 {
-  std::cout << "calling build here\n";
   size_t extended_graph_degree, graph_degree;
   auto build_config = get_build_config(res,
                                        params,
@@ -2571,7 +2553,6 @@ void build(raft::resources const& res,
       graph[i * graph_degree + j] = int_graph.data_handle()[i * extended_graph_degree + j];
     }
   }
-  std::cout << "returning from nnd build\n";
 }
 
 template <typename T,

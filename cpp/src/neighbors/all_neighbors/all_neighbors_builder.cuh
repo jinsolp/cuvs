@@ -342,25 +342,22 @@ struct all_neighbors_builder_nn_descent : public all_neighbors_builder<T, IdxT> 
 
     size_t extended_graph_degree, graph_degree;
 
-    auto build_config = nn_descent::detail::get_build_config(this->res,
+    auto build_config                = nn_descent::detail::get_build_config(this->res,
                                                              nnd_params,
                                                              this->max_cluster_size,
                                                              static_cast<size_t>(dataset.extent(1)),
                                                              nnd_params.metric,
                                                              extended_graph_degree,
                                                              graph_degree);
-    std::cout << "extended_graph_degree " << extended_graph_degree << " graph_degree "
-              << graph_degree << " this->max_cluster_size " << this->max_cluster_size << std::endl;
     build_config.output_graph_degree = this->k;
     nnd_builder.emplace(this->res, build_config);
-    std::cout << "using pinned matrix for int_graph" << std::endl;
+
     int_graph.emplace(raft::make_pinned_matrix<int, IdxT, row_major>(
       this->res, this->max_cluster_size, static_cast<IdxT>(extended_graph_degree)));
 
     if constexpr (std::is_same_v<
                     DistEpilogueT,
                     cuvs::neighbors::detail::reachability::ReachabilityPostProcess<IdxT, T>>) {
-      std::cout << "Distepi is ReachabilityPostProcess\n";
       batch_core_distances.emplace(
         raft::make_device_vector<T, IdxT>(this->res, this->max_cluster_size));
     }
@@ -460,7 +457,6 @@ struct all_neighbors_builder_nn_descent : public all_neighbors_builder<T, IdxT> 
           cuvs::neighbors::detail::reachability::ReachabilityPostProcess<int, T>{
             dist_epilogue.core_dists, dist_epilogue.alpha, dist_epilogue.n});
       } else {
-        std::cout << "building in side allneigh build_knn_common\n";
         nnd_builder.value().build(
           dataset.data_handle(),
           static_cast<int>(num_rows),
@@ -742,7 +738,6 @@ std::unique_ptr<all_neighbors_builder<T, IdxT>> get_knn_builder(
       RAFT_LOG_WARN("Setting nnd_params metric to metric given for batching algorithm");
       nn_descent_params.metric = params.metric;
     }
-    std::cout << "running nn descent in all neighbors k " << k << std::endl;
     return std::make_unique<all_neighbors_builder_nn_descent<T, IdxT, DistEpilogueT>>(
       handle,
       params.n_clusters,
