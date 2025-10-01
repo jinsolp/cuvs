@@ -187,7 +187,7 @@ __device__ __forceinline__ void warp_bitonic_sort(T* element_ptr, const int lane
 }
 
 constexpr int TILE_ROW_WIDTH = 64;
-constexpr int TILE_COL_WIDTH = 32;
+constexpr int TILE_COL_WIDTH = 32;  // this used to be 128
 
 constexpr int NUM_SAMPLES = 32;
 // For now, the max. number of samples is 32, so the sample cache size is fixed
@@ -344,12 +344,10 @@ __device__ void insert_to_global_graph(ResultItem<Index_t> elem,
   int lane_id            = tx % raft::warp_size();
   size_t global_idx_base = list_id * node_degree;
   if (elem.id() == list_id) return;
+  // TODO: optimize this part because this accesses pinned memory every time
   for (int track = 0; track < n_neighbors; track++) {
     if (final_graph[list_id * n_neighbors + track].id() == elem.id()) {
       // we already have this in the final graph!
-      // if (list_id == 0 && elem.id() == 1591) {  // sus???
-      //   printf("skipping 1591 add\n");
-      // }
       return;
     }
   }
@@ -417,6 +415,110 @@ __device__ void insert_to_global_graph(ResultItem<Index_t> elem,
     }
   } while (!loop_flag);
 }
+
+// template <typename Index_t, typename ID_t = InternalID_t<Index_t>>
+// __device__ void insert_to_global_graph(Index_t* new_neighbors,
+//                                        DistData_t* new_distances,
+//                                        size_t list_id,
+//                                        ID_t* graph,
+//                                        DistData_t* dists,
+//                                        int node_degree,
+//                                        int* locks,
+//                                        ID_t* final_graph,
+//                                        int n_neighbors,
+//                                       int list_size,
+//                                     int idx_in_list, int SKEWED_MAX_NUM_BI_SAMPLES, bool
+//                                     rev_dist=false)
+// {
+//   int tx                 = threadIdx.x;
+//   int lane_id            = tx % raft::warp_size();
+//   size_t global_idx_base = list_id * node_degree;
+//   // if (elem.id() == list_id) return;
+//   // TODO: optimize this part because this accesses pinned memory every time
+//   // for (int track = 0; track < n_neighbors; track++) {
+//   //   if (final_graph[list_id * n_neighbors + track].id() == elem.id()) {
+//   //     // we already have this in the final graph!
+
+//   //     return;
+//   //   }
+//   // }
+
+//   // node degree here is the DOD so num_segments here is always 1
+//   const int num_segments = raft::ceildiv(node_degree, raft::warp_size());
+
+//   int loop_flag = 0;
+//   do {
+//     int segment_id = 0;
+//     if (lane_id == 0) {
+//       loop_flag = atomicCAS(&locks[list_id * num_segments + segment_id], 0, 1) == 0;
+//     }
+
+//     loop_flag = __shfl_sync(raft::warp_full_mask(), loop_flag, 0);
+
+//     if (loop_flag == 1) {
+//       for (int candidate_idx = 0; candidate_idx < list_size; candidate_idx++) {
+//         float dist = 0;
+//         if (rev_dist){
+//           dist = new_distances[candidate_idx * SKEWED_MAX_NUM_BI_SAMPLES + idx_in_list];
+//         } else {
+//           dist = new_distances[idx_in_list * SKEWED_MAX_NUM_BI_SAMPLES + candidate_idx];
+//         }
+
+//         ResultItem<Index_t> elem(new_neighbors[candidate_idx], dist);
+//         if (elem.id() == list_id) continue;
+
+//         ResultItem<Index_t> knn_list_frag;
+//         int local_idx     = segment_id * raft::warp_size() + lane_id;
+//         size_t global_idx = global_idx_base + local_idx;
+//         if (local_idx < node_degree) {
+//           knn_list_frag.id_with_flag() = graph[global_idx].id_with_flag();
+//           knn_list_frag.dist()         = dists[global_idx];
+//         }
+
+//         int pos_to_insert = -1;
+//         ResultItem<Index_t> prev_elem;
+
+//         prev_elem.id_with_flag() =
+//           __shfl_up_sync(raft::warp_full_mask(), knn_list_frag.id_with_flag(), 1);
+//         prev_elem.dist() = __shfl_up_sync(raft::warp_full_mask(), knn_list_frag.dist(), 1);
+
+//         if (lane_id == 0) {
+//           prev_elem = ResultItem<Index_t>{std::numeric_limits<Index_t>::min(),
+//                                           std::numeric_limits<DistData_t>::lowest()};
+//         }
+//         if (elem > prev_elem && elem < knn_list_frag) {
+//           pos_to_insert = segment_id * raft::warp_size() + lane_id;
+//         } else if (elem == prev_elem || elem == knn_list_frag) {
+//           pos_to_insert = -2;
+//         }
+//         uint mask = __ballot_sync(raft::warp_full_mask(), pos_to_insert >= 0);
+//         if (mask) {
+//           uint set_lane_id = __fns(mask, 0, 1);
+//           pos_to_insert    = __shfl_sync(raft::warp_full_mask(), pos_to_insert, set_lane_id);
+//         }
+
+//         if (pos_to_insert >= 0) {
+//           int local_idx = segment_id * raft::warp_size() + lane_id;
+//           if (local_idx > pos_to_insert) {
+//             local_idx++;
+//           } else if (local_idx == pos_to_insert) {
+//             graph[global_idx_base + local_idx].id_with_flag() = elem.id_with_flag();
+//             dists[global_idx_base + local_idx]                = elem.dist();
+//             local_idx++;
+//           }
+//           size_t global_pos = global_idx_base + local_idx;
+//           if (local_idx < (segment_id + 1) * raft::warp_size() && local_idx < node_degree) {
+//             graph[global_pos].id_with_flag() = knn_list_frag.id_with_flag();
+//             dists[global_pos]                = knn_list_frag.dist();
+//           }
+//         }
+//         __threadfence();
+//       }
+//       if (loop_flag && lane_id == 0) { atomicExch(&locks[list_id * num_segments + segment_id],
+//       0); }
+//     }
+//   } while (!loop_flag);
+// }
 
 template <typename Index_t>
 __device__ ResultItem<Index_t> get_min_item(
@@ -593,8 +695,6 @@ __launch_bounds__(BLOCK_SIZE)
   // The kernel combines neighbors and reverse neighbors into shared memory arrays.
   // These are all the potential neighbors the kernel will evaluate for node i in this iteration.
 
-  // sus: for cases where list_new_size2.x is not the full NUM_SAMPLES(32) what happens to the empty
-  // slots? what is graph_new init with?
   if (tx < list_new_size2.x) {
     new_neighbors[tx] = graph_new[list_id * width + tx];
   } else if (tx >= list_new_size2.x && tx < list_new_size) {
@@ -728,17 +828,19 @@ __launch_bounds__(BLOCK_SIZE)
       }  // loaded vectors
       __syncthreads();
 
-      if (tid == 0) {
-        for (int row = 0; row < list_new_size; row++) {
-          for (int col = 0; col < list_new_size; col++) {
-            float acc = 0.0f;
-            for (int d = 0; d < num_load_elems; d++) {
-              acc += s_nv[row][d] * s_nv[col][d];
-            }
-            s_distances[row * SKEWED_MAX_NUM_BI_SAMPLES + col] += acc;
+      for (int i = threadIdx.x; i < MAX_NUM_BI_SAMPLES * SKEWED_MAX_NUM_BI_SAMPLES;
+           i += blockDim.x) {
+        int tmp_row = i / SKEWED_MAX_NUM_BI_SAMPLES;
+        int tmp_col = i % SKEWED_MAX_NUM_BI_SAMPLES;
+        if (tmp_row < list_new_size && tmp_col < list_new_size) {
+          float acc = 0.0f;
+          for (int d = 0; d < num_load_elems; d++) {
+            acc += s_nv[tmp_row][d] * s_nv[tmp_col][d];
           }
+          s_distances[i] += acc;
         }
       }
+
       __syncthreads();
     }
   }
@@ -748,8 +850,8 @@ __launch_bounds__(BLOCK_SIZE)
   // matrix between the "sample" vectors MAX_NUM_BI_SAMPLES * SKEWED_MAX_NUM_BI_SAMPLES = total
   // number of "cells" in a virtual 2D distance matrix we want to compute.
   for (int i = threadIdx.x; i < MAX_NUM_BI_SAMPLES * SKEWED_MAX_NUM_BI_SAMPLES; i += blockDim.x) {
-    int row_id = i % SKEWED_MAX_NUM_BI_SAMPLES;
-    int col_id = i / SKEWED_MAX_NUM_BI_SAMPLES;
+    int col_id = i % SKEWED_MAX_NUM_BI_SAMPLES;
+    int row_id = i / SKEWED_MAX_NUM_BI_SAMPLES;
 
     // following the python implementation of comparing only with later new neighbors
     if (row_id < list_new_size && col_id < list_new_size && row_id <= col_id) {
@@ -792,11 +894,11 @@ __launch_bounds__(BLOCK_SIZE)
   // at this point s_distances contains the final distances ready for selection of nearest
   // neighbors.
 
-  // list_new_size is the number of new neighbors we want to process.
-  // num_warps is the number of warps per block (16 in your case).
-  // Each warp is responsible for one candidate at a time.
-  // SUS: in original impl we try adding all potential neighbors into the list.
-  // here we pick min new-new and push that to only the idx_in_list's list
+  // // list_new_size is the number of new neighbors we want to process.
+  // // num_warps is the number of warps per block (16 in your case).
+  // // Each warp is responsible for one candidate at a time.
+  // // SUS: in original impl we try adding all potential neighbors into the list.
+  // // here we pick min new-new and push that to only the idx_in_list's list
   // for (int step = 0; step < raft::ceildiv(list_new_size, num_warps); step++) {
   //   // all threads in same warp end up with same idx_in_list
   //   // idx_in_list is the index of the current neighbor this warp is responsible for.
@@ -807,11 +909,10 @@ __launch_bounds__(BLOCK_SIZE)
   //   auto min_elem =
   //     get_min_item(new_neighbors[idx_in_list], idx_in_list, new_neighbors, s_distances);
   //   if (min_elem.id() < gridDim.x) {
-  //     insert_to_global_graph(min_elem, s_list[idx_in_list], graph, dists, graph_width, locks);
+  //     insert_to_global_graph(min_elem, s_list[idx_in_list], graph, dists, graph_width, locks,
+  //     final_graph, n_neighbors);
   //   }
   // }
-  // sus: do we not need to init grph and dists every time before we call local_join_kernel>
-  // or update it with the altest updates of host side h_dists and h_graph?
 
   // This version matches the python implementation
   // Each warp processes one "list_id" at a time (idx_in_list)
@@ -824,12 +925,15 @@ __launch_bounds__(BLOCK_SIZE)
 
     // Loop through whole thing instead of just the upper triangle to avoid cross-warp race
     // conditions
+    // TODO: maybe adding all candidates slows things down a lot.
+    // option1: grab lock and write all list_new_size candidates for new_neighbors[idx_in_list]
     for (int candidate_idx = 0; candidate_idx < list_new_size; candidate_idx++) {
       float dist_btw_new_new = s_distances[idx_in_list * SKEWED_MAX_NUM_BI_SAMPLES + candidate_idx];
       // don't care about segments here because DOD is 32 anyway
       // sus: okay so now this should work with only 1 segment at least
       insert_to_global_graph(ResultItem<Index_t>(new_neighbors[candidate_idx], dist_btw_new_new),
-                             new_neighbors[idx_in_list],
+                             new_neighbors[idx_in_list],  // this doesn't overlap within a single
+                                                          // block but it will over different blocks
                              graph,
                              dists,
                              graph_width,
@@ -837,15 +941,18 @@ __launch_bounds__(BLOCK_SIZE)
                              final_graph,
                              n_neighbors);
     }
+    // insert_to_global_graph(new_neighbors, s_distances,
+    // //ResultItem<Index_t>(new_neighbors[candidate_idx], dist_btw_new_new),
+    //                        new_neighbors[idx_in_list],  // this doesn't overlap within a single
+    //                        block but it will over different blocks graph, dists, graph_width,
+    //                        locks,
+    //                        final_graph,
+    //                        n_neighbors, list_new_size, idx_in_list, SKEWED_MAX_NUM_BI_SAMPLES);
   }
 
   if (!list_old_size) return;
 
   __syncthreads();
-  // if (threadIdx.x == 0) {
-  //   printf("row %d has old values: %d\n", static_cast<int>(blockIdx.x),
-  //   static_cast<int>(list_old_size));
-  // }
 
   if (metric != cuvs::distance::DistanceType::BitwiseHamming) {
     // wmma::fill_fragment(c_frag, 0.0);
@@ -885,18 +992,6 @@ __launch_bounds__(BLOCK_SIZE)
                    num_load_elems,
                    TILE_COL_WIDTH,
                    lane_id);
-          // __syncthreads();
-          // if (static_cast<int>(neighbor_id) == 0 && static_cast<int>(warp_id) == 0) {
-          //   printf("in row %d (0) vec [%f, %f, %f, %f]\n", static_cast<int>(blockIdx.x),
-          //         static_cast<float>(s_ov[idx][0]), static_cast<float>(s_ov[idx][1]),
-          //         static_cast<float>(s_ov[idx][2]), static_cast<float>(s_ov[idx][3]));
-          // }
-          // if (static_cast<int>(neighbor_id) == 61 && static_cast<int>(warp_id) == 0) {
-          //   printf("in row %d (61) vec [%f, %f, %f, %f]\n", static_cast<int>(blockIdx.x),
-          //         static_cast<float>(s_ov[idx][0]), static_cast<float>(s_ov[idx][1]),
-          //         static_cast<float>(s_ov[idx][2]), static_cast<float>(s_ov[idx][3]));
-          // }
-          // looks like these are being loaded properly
         }
       }
       __syncthreads();
@@ -910,17 +1005,19 @@ __launch_bounds__(BLOCK_SIZE)
       //   __syncthreads();
       // }
 
-      if (tid == 0) {
-        for (int row = 0; row < list_new_size; row++) {
-          for (int col = 0; col < list_old_size; col++) {
-            float acc = 0.0f;
-            for (int d = 0; d < num_load_elems; d++) {
-              acc += s_nv[row][d] * s_ov[col][d];
-            }
-            s_distances[row * SKEWED_MAX_NUM_BI_SAMPLES + col] += acc;
+      for (int i = threadIdx.x; i < MAX_NUM_BI_SAMPLES * SKEWED_MAX_NUM_BI_SAMPLES;
+           i += blockDim.x) {
+        int tmp_row = i / SKEWED_MAX_NUM_BI_SAMPLES;
+        int tmp_col = i % SKEWED_MAX_NUM_BI_SAMPLES;
+        if (tmp_row < list_new_size && tmp_col < list_old_size) {
+          float acc = 0.0f;
+          for (int d = 0; d < num_load_elems; d++) {
+            acc += s_nv[tmp_row][d] * s_ov[tmp_col][d];
           }
+          s_distances[i] += acc;
         }
       }
+
       __syncthreads();
     }
   }
@@ -937,27 +1034,6 @@ __launch_bounds__(BLOCK_SIZE)
     int col_id = i % SKEWED_MAX_NUM_BI_SAMPLES;  // old
     int row_id = i / SKEWED_MAX_NUM_BI_SAMPLES;  // new
     if (row_id < list_new_size && col_id < list_old_size) {
-      // if ((new_neighbors[row_id] == 2 && old_neighbors[col_id] == 4278) || (new_neighbors[row_id]
-      // == 4278 && old_neighbors[col_id] == 2)) {
-      //   printf("in row %d (2,4278) dist %f l2 norm [%f, %f]\n", static_cast<int>(blockIdx.x),
-      //   s_distances[i], static_cast<float>(l2_norms[new_neighbors[row_id]]),
-      //   static_cast<float>(l2_norms[old_neighbors[col_id]]));
-      // }
-      // if ((new_neighbors[row_id] == 2 && old_neighbors[col_id] == 7789) || (new_neighbors[row_id]
-      // == 7789 && old_neighbors[col_id] == 2)) {
-      //   printf("in row %d (2,7789) dist %f l2 norm [%f, %f]\n", static_cast<int>(blockIdx.x),
-      //   s_distances[i], static_cast<float>(l2_norms[new_neighbors[row_id]]),
-      //   static_cast<float>(l2_norms[old_neighbors[col_id]]));
-      // }
-      // if ((new_neighbors[row_id] == 2 && old_neighbors[col_id] == 4860) ||
-      //     (new_neighbors[row_id] == 4860 && old_neighbors[col_id] == 2)) {
-      //   printf("in row %d (2,4860) dist %f l2 norm [%f, %f]\n",
-      //          static_cast<int>(blockIdx.x),
-      //          s_distances[i],
-      //          static_cast<float>(l2_norms[new_neighbors[row_id]]),
-      //          static_cast<float>(l2_norms[old_neighbors[col_id]]));
-      // }
-
       if (metric == cuvs::distance::DistanceType::InnerProduct && can_postprocess_dist) {
         s_distances[i] = -s_distances[i];
       } else if (metric == cuvs::distance::DistanceType::CosineExpanded) {
@@ -1014,7 +1090,8 @@ __launch_bounds__(BLOCK_SIZE)
   //   }
 
   //   if (min_elem.id() < gridDim.x) {
-  //     insert_to_global_graph(min_elem, s_list[idx_in_list], graph, dists, graph_width, locks);
+  //     insert_to_global_graph(min_elem, s_list[idx_in_list], graph, dists, graph_width, locks,
+  //     final_graph, n_neighbors);
   //   }
   // }
 
@@ -1028,6 +1105,7 @@ __launch_bounds__(BLOCK_SIZE)
       continue;
 
     if (idx_in_list < MAX_NUM_BI_SAMPLES) {
+      // inserting in new neighbor the old neighbors
       for (int candidate_idx = 0; candidate_idx < list_old_size; candidate_idx++) {
         float dist_btw_new_old =
           s_distances[idx_in_list * SKEWED_MAX_NUM_BI_SAMPLES + candidate_idx];
@@ -1040,6 +1118,13 @@ __launch_bounds__(BLOCK_SIZE)
                                final_graph,
                                n_neighbors);
       }
+      // insert_to_global_graph(old_neighbors, s_distances,
+      // //ResultItem<Index_t>(new_neighbors[candidate_idx], dist_btw_new_new),
+      //                        new_neighbors[idx_in_list],  // this doesn't overlap within a single
+      //                        block but it will over different blocks graph, dists, graph_width,
+      //                        locks,
+      //                        final_graph,
+      //                        n_neighbors, list_old_size, idx_in_list, SKEWED_MAX_NUM_BI_SAMPLES);
 
     } else {
       idx_in_list = idx_in_list - MAX_NUM_BI_SAMPLES;
@@ -1055,6 +1140,14 @@ __launch_bounds__(BLOCK_SIZE)
                                final_graph,
                                n_neighbors);
       }
+      // insert_to_global_graph(new_neighbors, s_distances,
+      // //ResultItem<Index_t>(new_neighbors[candidate_idx], dist_btw_new_new),
+      //                        old_neighbors[idx_in_list],  // this doesn't overlap within a single
+      //                        block but it will over different blocks graph, dists, graph_width,
+      //                        locks,
+      //                        final_graph,
+      //                        n_neighbors, list_new_size, idx_in_list, SKEWED_MAX_NUM_BI_SAMPLES,
+      //                        true);
     }
   }
 #endif
@@ -1219,14 +1312,6 @@ void GnndGraph<Index_t>::init_random_graph()
 template <typename Index_t>
 void GnndGraph<Index_t>::sample_graph(bool sample_new)
 {
-  // // #pragma omp parallel for
-  //   auto shuffled_list = raft::make_host_vector<InternalID_t<Index_t>>(node_degree);
-
-  //   std::random_device rd;
-  //   std::mt19937 gen(rd());
-
-  // sus: maybe random shuffle here instead of doing this in orfer evey time
-
   // fill in with max sentinel value
   std::fill_n(h_graph_old.data_handle(), nrow * num_samples, std::numeric_limits<Index_t>::max());
   std::fill_n(h_graph_new.data_handle(), nrow * num_samples, std::numeric_limits<Index_t>::max());
@@ -1260,8 +1345,7 @@ void GnndGraph<Index_t>::sample_graph(bool sample_new)
     // Round 1: pick 1 neighbor from each segment
     // Round 2: pick the next neighbor from each segment
     // gives balanced exploration of old/new neighbors across the graph, instead of sampling many
-    // from the same local “region” sus: maybe worth random shuffling per segment hgraph instead of
-    // doing in-order?
+    // from the same local “region”
 
     for (size_t j = 0; j < node_degree; j++) {
       int col       = shuffled_idx[j];
@@ -2296,7 +2380,7 @@ void GNND<Data_t, Index_t>::build(Data_t* data,
     }
 
     for (size_t iter = 0; iter < build_config_.max_iterations; iter++) {
-      // std::cout << "\nrunning iter " << iter << std::endl;
+      std::cout << "\nrunning iter " << iter << std::endl;
       graph_.sample_graph(true);
       // we have new and old for forward edges at this point
       // h_graph_old and h_graph_new is filled with forward edges
@@ -2335,6 +2419,7 @@ void GNND<Data_t, Index_t>::build(Data_t* data,
                         d_list_sizes_old_.data_handle(),
                         stream);
       cudaDeviceSynchronize();
+      std::cout << "done add_reverse_edges\n";
 
       if (do_print) {
         raft::print_host_vector("h_rev_graph_new_ after reverse",
@@ -2358,6 +2443,7 @@ void GNND<Data_t, Index_t>::build(Data_t* data,
       auto wmma_range =
         raft::util::arch::SM_range(raft::util::arch::SM_70(), raft::util::arch::SM_future());
 
+      auto start = raft::curTimeMillis();
       if (wmma_range.contains(runtime_arch)) {
         local_join(stream, dist_epilogue);
       } else {
@@ -2365,6 +2451,8 @@ void GNND<Data_t, Index_t>::build(Data_t* data,
       }
 
       cudaDeviceSynchronize();
+      auto end = raft::curTimeMillis();
+      std::cout << "done local join " << end - start << std::endl;
       // at this point we have valid sample results in graph_buffer_ and dists_buffer_
 
       raft::copy(graph_host_buffer_.data_handle(),
@@ -2397,6 +2485,7 @@ void GNND<Data_t, Index_t>::build(Data_t* data,
                           DEGREE_ON_DEVICE,
                           update_counter_);
       cudaDeviceSynchronize();
+      std::cout << "done update_graph\n";
 
       // at this point we have updated h_graph and h_dists (segmented)
       if (do_print) {
@@ -2442,7 +2531,7 @@ void GNND<Data_t, Index_t>::build(Data_t* data,
           }
         }
       }
-      // std::cout << "num updates: " << update_counter_ << std::endl;
+      std::cout << "num updates: " << update_counter_ << std::endl;
       if (update_counter_ < 0.0001 * n_neighbors * nrow) { break; }
     }
 
