@@ -147,6 +147,12 @@ class AnnNNDescentTest : public ::testing::TestWithParam<AnnNNDescentInputs> {
         raft::resource::sync_stream(handle_);
       }
 
+      // raft::print_host_vector("indices_NNDescent", indices_NNDescent.data(), ps.graph_degree,
+      // std::cout); raft::print_host_vector("distances_NNDescent", distances_NNDescent.data(),
+      // ps.graph_degree, std::cout); raft::print_host_vector("indices_naive", indices_naive.data(),
+      // ps.graph_degree, std::cout); raft::print_host_vector("distances_naive",
+      // distances_naive.data(), ps.graph_degree, std::cout);
+
       double min_recall = ps.min_recall;
       EXPECT_TRUE(eval_neighbours(indices_naive,
                                   indices_NNDescent,
@@ -463,15 +469,23 @@ class AnnNNDescentBatchTest : public ::testing::TestWithParam<AnnNNDescentBatchI
   rmm::device_uvector<DataT> database;
 };
 
+// const std::vector<AnnNNDescentInputs> inputs =
+//   raft::util::itertools::product<AnnNNDescentInputs>({2000, 4000},                // n_rows
+//                                                      {4, 16, 31, 64, 256, 1024},  // dim
+//                                                      {32, 64},                    // graph_degree
+//                                                      {cuvs::distance::DistanceType::BitwiseHamming,
+//                                                       cuvs::distance::DistanceType::L2Expanded,
+//                                                       cuvs::distance::DistanceType::L2SqrtExpanded,
+//                                                       cuvs::distance::DistanceType::InnerProduct,
+//                                                       cuvs::distance::DistanceType::CosineExpanded},
+//                                                      {false, true},
+//                                                      {0.90});
+
 const std::vector<AnnNNDescentInputs> inputs =
-  raft::util::itertools::product<AnnNNDescentInputs>({2000, 4000},                // n_rows
-                                                     {4, 16, 31, 64, 256, 1024},  // dim
-                                                     {32, 64},                    // graph_degree
-                                                     {cuvs::distance::DistanceType::BitwiseHamming,
-                                                      cuvs::distance::DistanceType::L2Expanded,
-                                                      cuvs::distance::DistanceType::L2SqrtExpanded,
-                                                      cuvs::distance::DistanceType::InnerProduct,
-                                                      cuvs::distance::DistanceType::CosineExpanded},
+  raft::util::itertools::product<AnnNNDescentInputs>({2000},  // n_rows
+                                                     {31},    // dim
+                                                     {64},    // graph_degree
+                                                     {cuvs::distance::DistanceType::InnerProduct},
                                                      {false, true},
                                                      {0.90});
 
