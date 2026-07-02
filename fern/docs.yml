@@ -5,6 +5,7 @@ title: "cuVS"
 instances:
   - url: "nvidia-cuvs.docs.buildwithfern.com/cuvs"
     custom-domain: docs.nvidia.com/cuvs
+    multi-source: true
 footer: "./theme/nvidia/components/CustomFooter.tsx"
 logo:
   light: "./theme/nvidia/assets/NVIDIA_light.svg"
@@ -67,7 +68,6 @@ css:
 experimental:
   mdx-components:
     - "./theme/nvidia/components"
-  basepath-aware: true
 navbar-links:
   - type: "secondary"
     text: "GitHub"
@@ -367,6 +367,8 @@ navigation:
             path: "./pages/cpp_api/cpp-api-neighbors-ivf-flat.md"
           - page: "Neighbors IVF PQ"
             path: "./pages/cpp_api/cpp-api-neighbors-ivf-pq.md"
+          - page: "Neighbors IVF RaBitQ"
+            path: "./pages/cpp_api/cpp-api-neighbors-ivf-rabitq.md"
           - page: "Neighbors IVF SQ"
             path: "./pages/cpp_api/cpp-api-neighbors-ivf-sq.md"
           - page: "Neighbors NN Descent"
